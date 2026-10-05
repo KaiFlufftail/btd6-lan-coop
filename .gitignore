@@ -10,3 +10,5 @@ publish/
 # Never commit the game's own assemblies or Mod Helper.
 *.dll
 *.exe
+
+dist/

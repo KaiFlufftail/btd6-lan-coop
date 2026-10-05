@@ -1,4 +1,5 @@
 using System.Net;
+using System.Net.NetworkInformation;
 using System.Net.Sockets;
 using System.Collections.Concurrent;
 
@@ -12,6 +13,12 @@ using System.Collections.Concurrent;
 // and keep the port closed at the router.
 
 if (args.Contains("--selftest")) return SelfTest.Run();
+if (args.Contains("--help") || args.Contains("-h") || args.Contains("/?"))
+{
+    Console.WriteLine("btd6relay [port] [bind-address]   host a LAN co-op relay (default port 1445)");
+    Console.WriteLine("btd6relay --selftest              check the wire format and exit");
+    return 0;
+}
 
 int port = 1445;
 var positional = args.Where(a => !a.StartsWith("--")).ToArray();
@@ -27,8 +34,23 @@ var bind = positional.Length > 1 ? IPAddress.Parse(positional[1]) : IPAddress.IP
 var matches = new ConcurrentDictionary<string, Match>();
 var listener = new TcpListener(bind, port);
 if (Equals(bind, IPAddress.IPv6Any)) listener.Server.DualMode = true;
-listener.Start();
+
+try
+{
+    listener.Start();
+}
+catch (SocketException e)
+{
+    // The common one by far is a relay already running, which deserves a sentence
+    // rather than a stack trace.
+    Console.Error.WriteLine(e.SocketErrorCode == SocketError.AddressAlreadyInUse
+        ? $"port {port} is already in use, so a relay is probably already running"
+        : $"could not listen on {bind}:{port}: {e.Message}");
+    return 1;
+}
+
 Log($"listening on {bind}:{port}");
+Advertise(port);
 
 while (true)
 {
@@ -113,6 +135,43 @@ async Task Handle(TcpClient client)
 }
 
 static void Log(string m) => Console.WriteLine($"{DateTime.Now:HH:mm:ss} {m}");
+
+/// Prints what the other players have to type into the mod, plus the one command that
+/// opens the port, because a silent firewall is the usual reason a join never arrives.
+static void Advertise(int port)
+{
+    var addresses = NetworkInterface.GetAllNetworkInterfaces()
+        .Where(n => n.OperationalStatus == OperationalStatus.Up &&
+                    n.NetworkInterfaceType != NetworkInterfaceType.Loopback)
+        .SelectMany(n => n.GetIPProperties().UnicastAddresses
+            .Where(a => a.Address.AddressFamily == AddressFamily.InterNetwork &&
+                        !IPAddress.IsLoopback(a.Address) &&
+                        !a.Address.ToString().StartsWith("169.254"))
+            .Select(a => $"{a.Address} on {n.Name}"))
+        .ToArray();
+
+    Console.WriteLine();
+    if (addresses.Length == 0)
+    {
+        Console.WriteLine("no LAN address found; this machine may not be on a network");
+    }
+    else
+    {
+        Console.WriteLine("Relay address for every player's mod settings:");
+        foreach (var address in addresses) Console.WriteLine($"  {address}");
+    }
+
+    Console.WriteLine($"Relay port: {port}");
+    Console.WriteLine();
+    Console.WriteLine("If nobody can connect, the firewall is holding the port. Allow it with:");
+    Console.WriteLine(OperatingSystem.IsWindows()
+        ? $"  netsh advfirewall firewall add rule name=\"BTD6 LAN relay\" dir=in action=allow protocol=TCP localport={port} remoteip=LocalSubnet"
+        : $"  sudo ufw allow from 192.168.0.0/16 to any port {port} proto tcp");
+    Console.WriteLine(OperatingSystem.IsWindows()
+        ? "(or just run allow-firewall.cmd, which asks for the rights it needs; one-off)"
+        : "(one-off)");
+    Console.WriteLine();
+}
 
 sealed class Peer(int number, TcpClient client, Stream stream)
 {

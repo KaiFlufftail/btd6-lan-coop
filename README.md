@@ -36,34 +36,62 @@ game's own async machinery runs untouched. That is not built.
 | `mod/CoopHud/` | One quiet line per teammate showing their cash |
 | `mod/NetLogger/` | Diagnostic, dumps co-op messages to the MelonLoader log |
 | `PROTOCOL.md` | The relay wire protocol, reversed from a capture |
+| `build-relay.sh` / `.cmd` | Builds standalone relay binaries for both platforms into `dist/` |
 
-## Running it
+## Hosting, on either platform
 
-Build the relay once:
+One machine runs the relay. It does not have to be the machine that creates the lobby, and
+it can be Linux or Windows; the other players only need the address it prints.
 
-```bash
-cd relay && dotnet publish -c Release -r linux-x64 --self-contained
-```
-
-Start it on whichever machine is hosting, with the port and optionally the interface to
-bind:
+Build the standalone binaries, which bundle their own runtime so the machine running them
+needs nothing installed:
 
 ```bash
-btd6relay 1445 192.168.1.50
+./build-relay.sh
 ```
 
-Build and install a mod, with `BTD6_DIR` set if the game is not at the default Steam path:
+That writes `dist/linux-x64/btd6relay` and `dist/win-x64/btd6relay.exe`, about 13 MB each,
+along with the launchers below. Windows users with the .NET SDK can build their own copy
+with `build-relay.cmd` instead.
+
+**Hosting from Linux:**
+
+```bash
+./dist/linux-x64/btd6relay 1445
+```
+
+```bash
+sudo ufw allow from 192.168.0.0/16 to any port 1445 proto tcp
+```
+
+**Hosting from Windows:** double-click `start-relay.cmd`, and the first time only,
+`allow-firewall.cmd`, which asks for administrator rights and opens the port to the local
+network. Windows blocks inbound connections by default and a blocked port looks exactly
+like a join that never arrives. The rule is scoped by remote address rather than by
+firewall profile on purpose, because Windows commonly labels a home Wi-Fi network Public,
+and a private-profile rule then does nothing at all.
+
+Either way the relay prints the addresses it can be reached on and the port, which is what
+every player types into the mod's relay address setting. If a Tailscale or similar address
+appears in that list, friends on that network can use it too, though the firewall rule
+above would need widening since their traffic does not come from the local subnet.
+
+## Installing the mod
+
+Build it, with `BTD6_DIR` set if the game is not at the default Steam path:
 
 ```bash
 cd mod/LanCoop && dotnet build -c Release
 ```
 
-Copy the resulting dll from `bin/Release` into the game's `Mods` folder. Then in BTD6, under
-the mod's settings, turn LAN mode on and set the relay address to the hosting machine's LAN
-address on every machine. Create a co-op lobby as usual and share the invite code.
+Copy the dll from `bin/Release` into the game's `Mods` folder on every machine. The mod
+itself is the same file on Linux and Windows: MelonLoader runs it either way, including
+under Proton.
 
-Check the relay's output: each player should appear as `peer N joined`, and the round trip
-line should report single digit milliseconds.
+Then in BTD6, under the mod's settings, turn LAN mode on and set the relay address to the
+hosting machine on every machine. Create a co-op lobby as usual and share the invite code.
+The relay should log `peer N joined` for each player, with a round trip in single digit
+milliseconds.
 
 ## Requirements
 
@@ -86,8 +114,12 @@ minutes with no drops, no reconnects and no desync. Shared tower upgrades confir
 in the same setup. The relay's wire format is checked against the captured bytes by
 `btd6relay --selftest`.
 
+A Windows machine hosting the relay is verified at the protocol level: the Windows build
+accepted a join from a Linux client across the LAN and answered with a correct `JSRM`. It
+has not yet carried a real game.
+
 Not tested: three or four players, a player dropping and rejoining mid-match, the host
-leaving, a Windows machine hosting the relay, and mismatched game versions.
+leaving, and mismatched game versions.
 
 Known limitation: there is no reconnect or resync support. A peer whose socket drops cannot
 rejoin an in-progress match, because the relay keeps no history of the action stream to
