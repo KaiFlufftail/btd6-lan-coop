@@ -111,7 +111,7 @@ public host.
 
 Verified: two players, a Linux host and a Windows guest, one 105 round session of about 28
 minutes with no drops, no reconnects and no desync. Shared tower upgrades confirmed working
-in the same setup. The relay's wire format is checked against the captured bytes by
+in the same setup, and the current build confirmed connecting and playing on both machines. The relay's wire format is checked against the captured bytes by
 `btd6relay --selftest`.
 
 A Windows machine hosting the relay is verified at the protocol level: the Windows build
