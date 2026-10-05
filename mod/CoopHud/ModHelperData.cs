@@ -3,7 +3,7 @@ namespace CoopHud;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "56.3";
-    public const string Version = "1.1.0";
+    public const string Version = "1.2.0";
     public const string Name = "Co-op Teammate HUD";
 
     public const string Description =

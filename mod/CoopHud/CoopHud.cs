@@ -3,6 +3,9 @@ using BTD_Mod_Helper;
 using BTD_Mod_Helper.Api.Components;
 using BTD_Mod_Helper.Api.ModOptions;
 using BTD_Mod_Helper.Extensions;
+using Il2CppAssets.Scripts.Models.Bloons;
+using Il2CppAssets.Scripts.Simulation.Bloons;
+using Il2CppAssets.Scripts.Simulation.Track;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.Network;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
@@ -39,6 +42,12 @@ public class CoopHud : BloonsTD6Mod
     {
         displayName = "Show each teammate's change since the round started",
         description = "Banking or spending at a glance. Adds a second number per row."
+    };
+
+    private static readonly ModSettingBool ShowBloonsLeft = new(true)
+    {
+        displayName = "Show how many bloons are left in the round",
+        description = "Bloons on the track plus the ones still to be sent."
     };
 
     private static readonly ModSettingBool ShowPing = new(false)
@@ -92,6 +101,12 @@ public class CoopHud : BloonsTD6Mod
     private static ModHelperPanel panel;
     private static readonly List<ModHelperText> Rows = new();
     private static readonly Dictionary<int, double> CashAtRoundStart = new();
+
+    // Pending bloons are counted as the round's emission total minus what the spawner has
+    // actually emitted, keyed by round because BTD6 overlaps them: a new round starts while
+    // the one before it is still sending.
+    private static readonly Dictionary<int, int> RoundEmissionTotal = new();
+    private static readonly Dictionary<int, int> RoundEmitted = new();
     private static float nextRefresh;
     private static bool hiddenByHotkey;
     private static bool hiddenByPause;
@@ -121,6 +136,20 @@ public class CoopHud : BloonsTD6Mod
         {
             CashAtRoundStart[number] = CashOf(number);
         }
+
+        var round = InGame.instance.bridge.GetCurrentRound() + 1;
+        if (RoundEmissionTotal.ContainsKey(round)) return;
+
+        var total = EmissionsFor(round);
+        RoundEmissionTotal[round] = total;
+        RoundEmitted[round] = 0;
+        ModHelper.Msg<CoopHud>($"[hud] round {round}: {total} bloons to send");
+    }
+
+    public override void OnBloonEmitted(Spawner spawner, BloonModel bloonModel, int round, int index,
+        float startingDist, ref Bloon bloon)
+    {
+        RoundEmitted[round] = RoundEmitted.TryGetValue(round, out var emitted) ? emitted + 1 : 1;
     }
 
     public override void OnUpdate()
@@ -163,6 +192,12 @@ public class CoopHud : BloonsTD6Mod
             if (number == own && !ShowOwnRow) continue;
 
             Write(Rows[row], Describe(coop, number), alpha);
+            row++;
+        }
+
+        if (ShowBloonsLeft && row < Rows.Count)
+        {
+            Write(Rows[row], $"{BloonsLeft()} bloons left", alpha * 0.8f);
             row++;
         }
 
@@ -237,6 +272,36 @@ public class CoopHud : BloonsTD6Mod
         return name.Length > 14 ? name.Substring(0, 14) : name;
     }
 
+    /// On the track plus still to be sent. Children count as they appear, so a ceramic wave
+    /// pushes the number up before it comes down, which is what the track actually holds.
+    private static int BloonsLeft()
+    {
+        var inGame = InGame.instance;
+        if (inGame == null) return 0;
+
+        var onTrack = inGame.GetBloons()?.Count ?? 0;
+
+        var pending = 0;
+        foreach (var round in RoundEmissionTotal)
+        {
+            var emitted = RoundEmitted.TryGetValue(round.Key, out var done) ? done : 0;
+            var left = round.Value - emitted;
+            if (left > 0) pending += left;
+        }
+
+        return onTrack + pending;
+    }
+
+    private static int EmissionsFor(int round)
+    {
+        var spawner = InGame.instance?.bridge?.Simulation?.Map?.spawner;
+        if (spawner == null || spawner.roundData == null) return 0;
+
+        return spawner.roundData.TryGetValue(round, out var data) && data.emissions != null
+            ? data.emissions.Count
+            : 0;
+    }
+
     private static double CashOf(int playerNumber)
     {
         var simulation = InGame.instance?.bridge?.Simulation;
@@ -307,6 +372,8 @@ public class CoopHud : BloonsTD6Mod
         panel = null;
         Rows.Clear();
         CashAtRoundStart.Clear();
+        RoundEmissionTotal.Clear();
+        RoundEmitted.Clear();
         hiddenByPause = false;
     }
 }
