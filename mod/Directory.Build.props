@@ -1,0 +1,14 @@
+<Project>
+  <!-- Mods compile against the installed game's MelonLoader, Il2Cpp assemblies and Mod
+       Helper, none of which can be redistributed. Override with BTD6_DIR when the game
+       lives somewhere other than the default Steam path. -->
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == ''">$(BTD6_DIR)</GameDir>
+    <GameDir Condition="'$(GameDir)' == '' and '$(OS)' != 'Windows_NT'">$(HOME)/.steam/debian-installation/steamapps/common/BloonsTD6</GameDir>
+    <GameDir Condition="'$(GameDir)' == '' and '$(OS)' == 'Windows_NT'">C:\Program Files (x86)\Steam\steamapps\common\BloonsTD6</GameDir>
+  </PropertyGroup>
+
+  <Target Name="RequireGameDir" BeforeTargets="ResolveAssemblyReferences" Condition="!Exists('$(GameDir)')">
+    <Error Text="BloonsTD6 not found at '$(GameDir)'. Set BTD6_DIR to the game folder, for example BTD6_DIR=/path/to/BloonsTD6 dotnet build -c Release" />
+  </Target>
+</Project>

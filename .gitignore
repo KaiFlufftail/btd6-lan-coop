@@ -1,0 +1,12 @@
+bin/
+obj/
+publish/
+
+# Packet captures and relay logs carry account ids, lobby codes and player names.
+*.pcap
+*.hex
+*.log
+
+# Never commit the game's own assemblies or Mod Helper.
+*.dll
+*.exe
