@@ -95,7 +95,7 @@ milliseconds.
 
 ## Requirements
 
-MelonLoader 0.7.3 and BTD Mod Helper 3.6.8, against game version 56.3. Every machine in a
+MelonLoader 0.7.3 and BTD Mod Helper 3.6.9, against game version 57.0. Every machine in a
 match must run the same game version and the same set of mods, because lockstep means both
 simulations have to agree exactly. Mods that only read, like CoopHud, are safe to run on one
 machine alone; anything that changes the simulation is not.

@@ -2,7 +2,7 @@ namespace BTD6LanNetLogger;
 
 public static class ModHelperData
 {
-    public const string WorksOnVersion = "56.3";
+    public const string WorksOnVersion = "57.0";
     public const string Version = "0.1.0";
     public const string Name = "BTD6 LAN Net Logger";
 

@@ -2,8 +2,8 @@ namespace BTD6CoopShare;
 
 public static class ModHelperData
 {
-    public const string WorksOnVersion = "56.3";
-    public const string Version = "2.0.0";
+    public const string WorksOnVersion = "57.0";
+    public const string Version = "2.0.1";
     public const string Name = "BTD6 Co-op Shared Towers";
 
     public const string Description =

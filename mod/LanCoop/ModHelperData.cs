@@ -2,8 +2,8 @@ namespace BTD6LanCoop;
 
 public static class ModHelperData
 {
-    public const string WorksOnVersion = "56.3";
-    public const string Version = "1.0.0";
+    public const string WorksOnVersion = "57.0";
+    public const string Version = "1.0.1";
     public const string Name = "BTD6 LAN Co-op";
 
     public const string Description =
