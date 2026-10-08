@@ -3,7 +3,7 @@ namespace BTD6UiMap;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "1.0.0";
+    public const string Version = "2.0.0";
     public const string Name = "BTD6 UI Map";
 
     public const string Description =
