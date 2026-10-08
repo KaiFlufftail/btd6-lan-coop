@@ -1,12 +1,16 @@
 using System;
+using System.Collections.Generic;
 using BTD_Mod_Helper;
+using BTD_Mod_Helper.Api.Components;
 using BTD_Mod_Helper.Api.ModOptions;
 using BTD_Mod_Helper.Extensions;
 using HarmonyLib;
+using Il2CppAssets.Scripts.Simulation.Bloons;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
 using MelonLoader;
 using UnityEngine;
+using UnityEngine.UI;
 
 [assembly: MelonInfo(typeof(BTD6Versus.Main), BTD6Versus.ModHelperData.Name,
     BTD6Versus.ModHelperData.Version, BTD6Versus.ModHelperData.RepoOwner)]
@@ -55,8 +59,32 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
+    private static readonly ModSettingInt StartingLives = new(100)
+    {
+        displayName = "Lives each side starts with",
+        min = 1,
+        max = 10000,
+        slider = false
+    };
+
     private static int sendsSeen;
     private static int bloonsSpawned;
+
+    // Every client runs the same hooks in the same order inside the lockstep, so both
+    // machines arrive at the same numbers without any of this being sent anywhere.
+    private static readonly Dictionary<int, int> Lives = new();
+    private static readonly Dictionary<IntPtr, int> SentBloonOwner = new();
+    private static readonly List<PendingSend> Pending = new();
+
+    private sealed class PendingSend(int sender, string bloon, int remaining)
+    {
+        public int Sender { get; } = sender;
+        public string Bloon { get; } = bloon;
+        public int Remaining { get; set; } = remaining;
+    }
+
+    private static GameObject hudObject;
+    private static ModHelperText hudText;
 
     public override void OnApplicationStart()
     {
@@ -67,9 +95,102 @@ public class Main : BloonsTD6Mod
     {
         sendsSeen = 0;
         bloonsSpawned = 0;
+        Lives.Clear();
+        SentBloonOwner.Clear();
+        Pending.Clear();
+    }
+
+    public override void OnMatchEnd() => Teardown();
+
+    public override void OnMainMenu() => Teardown();
+
+    /// A bloon that arrives right after a send, of the type that was sent, belongs to that
+    /// send. Sends are explicit and bursty, so taking them in order is enough; a bloon that
+    /// splits into children only counts for its own layer, which is a known gap.
+    public override void OnBloonCreated(Bloon bloon)
+    {
+        if (Pending.Count == 0) return;
+
+        var id = bloon.bloonModel?.id;
+        for (var i = 0; i < Pending.Count; i++)
+        {
+            var send = Pending[i];
+            if (send.Bloon != id) continue;
+
+            SentBloonOwner[bloon.Pointer] = send.Sender;
+            send.Remaining--;
+            if (send.Remaining <= 0) Pending.RemoveAt(i);
+            return;
+        }
+    }
+
+    public override void PostBloonLeaked(Bloon bloon)
+    {
+        if (!SentBloonOwner.Remove(bloon.Pointer, out var sender)) return;
+
+        // A sent bloon that gets through costs the player it was aimed at, not the sender.
+        var victim = Opponent(sender);
+        var damage = (int) Math.Max(1, bloon.bloonModel.leakDamage);
+        Lives[victim] = LivesOf(victim) - damage;
+
+        ModHelper.Msg<Main>($"[vs] player {victim} leaked a sent {bloon.bloonModel?.id} from player {sender}, " +
+                            $"-{damage}, now on {LivesOf(victim)}");
+
+        if (LivesOf(victim) <= 0) ModHelper.Msg<Main>($"[vs] player {victim} is out, player {sender} wins");
     }
 
     public override void OnUpdate()
+    {
+        UpdateHud();
+        SendOnHotkey();
+    }
+
+    /// Its own overlay canvas, the same shape as the co-op HUD, because the vanilla lives
+    /// counter still shows the shared pool and means nothing here.
+    private static void UpdateHud()
+    {
+        var inGame = InGame.instance;
+        if (inGame == null || inGame.bridge == null || !inGame.IsInGame())
+        {
+            Teardown();
+            return;
+        }
+
+        if (hudObject == null)
+        {
+            hudObject = new GameObject("VersusLives");
+            var canvas = hudObject.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = 50;
+
+            var scaler = hudObject.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.matchWidthOrHeight = 0.5f;
+
+            hudText = hudObject.AddText(new Info("VersusLivesText", 50, -140, 700, 48, new Vector2(0, 1)),
+                "", 40, Il2CppTMPro.TextAlignmentOptions.Left);
+        }
+
+        var me = inGame.bridge.GetInputId();
+        var them = Opponent(me);
+        hudText.SetText($"you {LivesOf(me)}   them {LivesOf(them)}");
+        hudText.Text.color = LivesOf(me) <= 0 ? new Color(1f, 0.4f, 0.4f, 0.9f) : new Color(1f, 1f, 1f, 0.75f);
+    }
+
+    private static void Teardown()
+    {
+        if (hudObject != null) UnityEngine.Object.Destroy(hudObject);
+        hudObject = null;
+        hudText = null;
+    }
+
+    private static int LivesOf(int player) => Lives.TryGetValue(player, out var lives) ? lives : StartingLives;
+
+    /// Two sided for now: whoever is not the sender.
+    private static int Opponent(int sender) => sender == 1 ? 2 : 1;
+
+    private static void SendOnHotkey()
     {
         if (!SendKey.JustPressed()) return;
 
@@ -99,6 +220,7 @@ public class Main : BloonsTD6Mod
                 var spacing = int.Parse(parts[2]) / 1000f;
 
                 InGame.instance.SpawnBloons(bloon, count, spacing);
+                Pending.Add(new PendingSend(__instance.peerId, bloon, count));
 
                 sendsSeen++;
                 bloonsSpawned += count;
