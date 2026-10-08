@@ -61,6 +61,9 @@ while (true)
 async Task Handle(TcpClient client)
 {
     client.NoDelay = true;                      // lockstep wants latency, not throughput
+    // A client that vanishes without a FIN (sleep, Wi-Fi drop) would otherwise hold its
+    // slot forever, because a blocked read never returns.
+    client.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.KeepAlive, true);
     var stream = client.GetStream();
     var ct = CancellationToken.None;
     Match? match = null;
@@ -72,7 +75,7 @@ async Task Handle(TcpClient client)
 
         var (matchId, player) = Protocol.ParseJoin(first.Payload);
         match = matches.GetOrAdd(matchId, id => new Match(id));
-        peer = match.Join(client, stream);
+        peer = match.Join(client, stream, player);
         if (peer is null)
         {
             Log($"[{matchId}] full with {Match.MaxPeers} peers, refusing another");
@@ -92,6 +95,8 @@ async Task Handle(TcpClient client)
         {
             var frame = await Protocol.Read(stream, ct);
             if (frame is null) break;
+            peer.Seen();
+            match.DropIdlePeers();
 
             // The real relay answers latency pings itself (captured: a 24B ECHO reply per
             // 16B ECHO request, never forwarded) and swallows the ECHR latency report.
@@ -173,10 +178,17 @@ static void Advertise(int port)
     Console.WriteLine();
 }
 
-sealed class Peer(int number, TcpClient client, Stream stream)
+sealed class Peer(int number, TcpClient client, Stream stream, string playerId)
 {
     public int Number { get; } = number;
     public TcpClient Client { get; } = client;
+
+    /// The account id from the join frame. One account owns one player slot, which is how
+    /// a reconnect is told apart from a genuine extra player.
+    public string PlayerId { get; } = playerId;
+
+    public DateTime LastFrame { get; private set; } = DateTime.UtcNow;
+    public void Seen() => LastFrame = DateTime.UtcNow;
     readonly Stream _stream = stream;
     readonly SemaphoreSlim _write = new(1, 1);
 
@@ -188,6 +200,11 @@ sealed class Peer(int number, TcpClient client, Stream stream)
         LatencySamples++;
         AvgLatency += (ms - AvgLatency) / LatencySamples;
         if (ms > MaxLatency) MaxLatency = ms;
+    }
+
+    public void Close()
+    {
+        try { Client.Close(); } catch { /* already gone */ }
     }
 
     public async Task Send(byte[] frame)
@@ -211,21 +228,49 @@ sealed class Match(string id)
 
     /// The lowest free number rather than a running counter: the simulation addresses
     /// players as 1 to 4, so a peer that drops and rejoins has to get its slot back
-    /// instead of becoming player 3 in a two player game. Null when the match is full.
-    public Peer? Join(TcpClient c, Stream s)
+    /// instead of becoming player 3 in a two player game. An account that is already in
+    /// the match is reconnecting, so its old socket is dropped and its number reused,
+    /// which is the difference between a rejoin and a phantom extra player. Null when the
+    /// match is full.
+    public Peer? Join(TcpClient c, Stream s, string playerId)
     {
         lock (_gate)
         {
+            var existing = _peers.FirstOrDefault(p => p.PlayerId == playerId);
+            if (existing is not null)
+            {
+                _peers.Remove(existing);
+                existing.Close();
+                var rejoined = new Peer(existing.Number, c, s, playerId);
+                _peers.Add(rejoined);
+                return rejoined;
+            }
+
             for (var number = 1; number <= MaxPeers; number++)
             {
                 if (_peers.Any(p => p.Number == number)) continue;
-                var peer = new Peer(number, c, s);
+                var peer = new Peer(number, c, s, playerId);
                 _peers.Add(peer);
                 return peer;
             }
 
             return null;
         }
+    }
+
+    /// Clients ping about once a second, so a peer that has sent nothing for half a minute
+    /// is gone whatever its socket claims.
+    public Peer[] DropIdlePeers()
+    {
+        Peer[] stale;
+        lock (_gate)
+        {
+            stale = _peers.Where(p => DateTime.UtcNow - p.LastFrame > TimeSpan.FromSeconds(30)).ToArray();
+            foreach (var peer in stale) _peers.Remove(peer);
+        }
+
+        foreach (var peer in stale) peer.Close();
+        return stale;
     }
 
     public void Leave(Peer p) { lock (_gate) _peers.Remove(p); }

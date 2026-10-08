@@ -79,12 +79,12 @@ static class SelfTest
         failures += Check("a rejoining peer gets the free slot back", () =>
         {
             var match = new Match("test");
-            var first = match.Join(null!, Stream.Null);
-            var second = match.Join(null!, Stream.Null);
+            var first = match.Join(null!, Stream.Null, "player-one");
+            var second = match.Join(null!, Stream.Null, "player-two");
             if (first is null || second is null || first.Number != 1 || second.Number != 2) return false;
 
             match.Leave(first);
-            var rejoined = match.Join(null!, Stream.Null);
+            var rejoined = match.Join(null!, Stream.Null, "player-one");
             return rejoined is not null && rejoined.Number == 1;
         });
 
@@ -93,10 +93,22 @@ static class SelfTest
             var match = new Match("test");
             for (var i = 0; i < Match.MaxPeers; i++)
             {
-                if (match.Join(null!, Stream.Null) is null) return false;
+                if (match.Join(null!, Stream.Null, $"player-{i}") is null) return false;
             }
 
-            return match.Join(null!, Stream.Null) is null;
+            return match.Join(null!, Stream.Null, "player-five") is null;
+        });
+
+        failures += Check("a reconnecting account keeps its own number instead of taking a new slot", () =>
+        {
+            var match = new Match("test");
+            var host = match.Join(null!, Stream.Null, "host-account");
+            var guest = match.Join(null!, Stream.Null, "guest-account");
+            if (host is null || guest is null || guest.Number != 2) return false;
+
+            // The guest's socket died without a FIN and its client reconnected.
+            var reconnected = match.Join(null!, Stream.Null, "guest-account");
+            return reconnected is not null && reconnected.Number == 2 && match.Count == 2;
         });
 
         Console.WriteLine(failures == 0 ? "all checks passed" : $"{failures} check(s) failed");
