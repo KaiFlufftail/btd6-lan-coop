@@ -52,9 +52,10 @@ public class Main : BloonsTD6Mod
         maxValue = 50
     };
 
-    private static readonly ModSettingBool ShowPanel = new(true)
+    private static readonly ModSettingBool VersusMode = new(true)
     {
-        displayName = "Show the send panel in game"
+        displayName = "Versus mode",
+        description = "Turns the powers tab into the bloon send tab. Off gives the powers back."
     };
 
     private static readonly ModSettingInt PanelY = new(30)
@@ -172,7 +173,41 @@ public class Main : BloonsTD6Mod
         if (inGame == null || inGame.bridge == null || !inGame.IsInGame()) return;
 
         var me = inGame.bridge.GetInputId();
-        inGame.bridge.SendEmote(me, me, $"{Marker}{index}");
+
+        // With another player there, the send has to travel as an action so both
+        // simulations do it on the same tick. On your own there is nobody to stay in step
+        // with, so it just happens, which makes the whole thing testable in single player.
+        if (inGame.bridge.TryCast<NetworkedUnityToSimulation>() is not null)
+        {
+            inGame.bridge.SendEmote(me, me, $"{Marker}{index}");
+            return;
+        }
+
+        ApplySend(me, index, inGame.bridge.GetCurrentRound());
+    }
+
+    private static void ApplySend(int sender, int index, int round)
+    {
+        if (loser != 0) return;
+
+        var send = SendType.All[index];
+        var cost = CostOf(send);
+        var wallet = Sim?.GetCashManager(sender)?.cash;
+
+        if (wallet is null || wallet.Value < cost)
+        {
+            ModHelper.Msg<Main>($"[vs] player {sender} cannot afford {send.Label} at {cost}");
+            return;
+        }
+
+        wallet.Value -= cost;
+        Income[sender] = IncomeOf(sender) + send.Income;
+        InGame.instance.SpawnBloons(send.Bloon, send.Count, 0.3f);
+        Pending.Add(new PendingSend(sender, send.Bloon, send.Count));
+
+        sendsSeen++;
+        ModHelper.Msg<Main>($"[vs] send {sendsSeen} on round {round + 1}: player {sender} paid " +
+                            $"{cost} for {send.Count} {send.Label}, income now {IncomeOf(sender)}");
     }
 
     private static int CostOf(SendType send) => (int) Math.Round(send.Cost * (double) PriceScale);
@@ -183,6 +218,9 @@ public class Main : BloonsTD6Mod
 
     private static Il2CppAssets.Scripts.Simulation.Simulation Sim => InGame.instance?.bridge?.Simulation;
 
+    /// Two sided for now. On your own this still names a player 2, which is what makes a
+    /// single player game a usable test: your sends land on an imaginary opponent whose
+    /// lives you can watch fall.
     private static int Opponent(int sender) => sender == 1 ? 2 : 1;
 
     [HarmonyPatch(typeof(UnityToSimulation.SendEmoteAction), nameof(UnityToSimulation.SendEmoteAction.Run))]
@@ -197,29 +235,7 @@ public class Main : BloonsTD6Mod
 
             try
             {
-                var index = int.Parse(emote.Substring(Marker.Length));
-                var send = SendType.All[index];
-                var sender = __instance.peerId;
-                var cost = CostOf(send);
-                var wallet = Sim?.GetCashManager(sender)?.cash;
-
-                if (loser != 0) return false;
-
-                if (wallet == null || wallet.Value < cost)
-                {
-                    ModHelper.Msg<Main>($"[vs] player {sender} cannot afford {send.Label} at {cost}");
-                    return false;
-                }
-
-                wallet.Value -= cost;
-                Income[sender] = IncomeOf(sender) + send.Income;
-                InGame.instance.SpawnBloons(send.Bloon, send.Count, 0.3f);
-                Pending.Add(new PendingSend(sender, send.Bloon, send.Count));
-
-                sendsSeen++;
-                ModHelper.Msg<Main>($"[vs] send {sendsSeen} on round {uts.GetCurrentRound() + 1}: " +
-                                    $"player {sender} paid {cost} for {send.Count} {send.Label}, " +
-                                    $"income now {IncomeOf(sender)}");
+                ApplySend(__instance.peerId, int.Parse(emote.Substring(Marker.Length)), uts.GetCurrentRound());
             }
             catch (Exception e)
             {
@@ -233,7 +249,7 @@ public class Main : BloonsTD6Mod
     private static void UpdateUi()
     {
         var inGame = InGame.instance;
-        if (inGame == null || inGame.bridge == null || !inGame.IsInGame() || !ShowPanel)
+        if (inGame == null || inGame.bridge == null || !inGame.IsInGame() || !VersusMode)
         {
             Teardown();
             return;
@@ -301,7 +317,6 @@ public class Main : BloonsTD6Mod
             scaler.referenceResolution = new Vector2(1920, 1080);
             scaler.matchWidthOrHeight = 0.5f;
 
-            BuildSends();
             BuildLives(health);
             built = true;
         }
@@ -312,47 +327,86 @@ public class Main : BloonsTD6Mod
         }
     }
 
-    private static void BuildSends()
+    /// The powers tab builds its own buttons and then hides and rebuilds them whenever it
+    /// opens, so the only way to live in it is to be part of that build. The game lays each
+    /// button out through GetNextButton; its insides are replaced with a bloon and a price.
+    [HarmonyPatch(typeof(BasePowersMenu), nameof(BasePowersMenu.LoadPowers))]
+    private static class LoadPowersPatch
     {
-        var model = InGame.instance.bridge?.Model ?? Game.instance.model;
+        private static void Postfix(BasePowersMenu __instance) => FillWithSends(__instance);
+    }
 
-        ButtonCosts.Clear();
+    [HarmonyPatch(typeof(BasePowersMenu), nameof(BasePowersMenu.RebuildPowers))]
+    private static class RebuildPowersPatch
+    {
+        private static void Postfix(BasePowersMenu __instance) => FillWithSends(__instance);
+    }
 
-        var bar = hudObject.AddModHelperPanel(
-            new Info("VersusSends", 0, PanelY, 1280, 196, new Vector2(0.5f, 0)),
-            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Horizontal, 6, 14);
+    private static void FillWithSends(BasePowersMenu menu)
+    {
+        if (!VersusMode || menu is null) return;
 
-        var withArt = 0;
-        for (var i = 0; i < SendType.All.Length; i++)
+        try
         {
-            var send = SendType.All[i];
-            var index = i;
-            var bloon = model is null ? null : model.GetBloon(send.Bloon);
-            var icon = bloon is null ? null : bloon.icon;
-            var guid = icon is null ? null : icon.GetGUID();
+            menu.ClearButtons();
+            ButtonCosts.Clear();
 
-            var cell = bar.AddPanel(new Info($"Send{i}", 118, 168), null, RectTransform.Axis.Vertical, 0);
-            var button = cell.AddButton(new Info($"SendBtn{i}", 112, 112),
-                VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
+            var model = InGame.instance?.bridge?.Model ?? Game.instance.model;
+            var withArt = 0;
 
-            if (string.IsNullOrEmpty(guid))
+            for (var i = 0; i < SendType.All.Length; i++)
             {
-                button.AddText(new Info($"SendName{i}", 104, 60), send.Label, 22);
-            }
-            else
-            {
-                // The sandbox bloon menu only exists in sandbox, so its buttons are no use
-                // here; the bloon's own icon off its model is always there.
-                button.AddImage(new Info($"SendIcon{i}", 92), guid);
-                withArt++;
+                var send = SendType.All[i];
+                var index = i;
+
+                var slot = menu.GetNextButton();
+                if (slot is null) break;
+
+                slot.SetActive(true);
+
+                // Keep the game's placement, replace what is drawn inside it.
+                var holder = slot.transform;
+                for (var child = holder.childCount - 1; child >= 0; child--)
+                {
+                    UnityEngine.Object.Destroy(holder.GetChild(child).gameObject);
+                }
+
+                foreach (var old in slot.GetComponents<PowerButton>())
+                {
+                    if (old is not null) UnityEngine.Object.Destroy(old);
+                }
+
+                var panel = slot.AddModHelperPanel(new Info($"Send{i}", InfoPreset.FillParent), null,
+                    RectTransform.Axis.Vertical, 0);
+
+                var bloon = model is null ? null : model.GetBloon(send.Bloon);
+                var icon = bloon is null ? null : bloon.icon;
+                var guid = icon is null ? null : icon.GetGUID();
+
+                var button = panel.AddButton(new Info($"SendBtn{i}", 170, 170),
+                    VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
+
+                if (string.IsNullOrEmpty(guid))
+                {
+                    button.AddText(new Info($"SendName{i}", 150, 80), send.Label, 30);
+                }
+                else
+                {
+                    button.AddImage(new Info($"SendIcon{i}", 140), guid);
+                    withArt++;
+                }
+
+                ButtonCosts.Add(panel.AddText(new Info($"SendCost{i}", 200, 40), "", 32));
+                panel.AddText(new Info($"SendInfo{i}", 200, 32), $"x{send.Count}  +{send.Income}", 24);
             }
 
-            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 118, 30), "", 24));
-            cell.AddText(new Info($"SendInfo{i}", 118, 22), $"x{send.Count}  +{send.Income}", 18);
+            ModHelper.Msg<Main>($"[vs] powers tab filled with {ButtonCosts.Count} sends, " +
+                                $"{withArt} showing bloon art");
         }
-
-        ModHelper.Msg<Main>($"[vs] send panel built, {withArt} of {SendType.All.Length} buttons " +
-                            "showing bloon art");
+        catch (Exception e)
+        {
+            ModHelper.Error<Main>($"[vs] filling the powers tab failed: {e}");
+        }
     }
 
     /// Built rather than cloned: the real lives widget carries a heart sized and anchored
