@@ -279,13 +279,21 @@ public class Main : BloonsTD6Mod
         var powers = FindAnywhere<PowersMenu>();
         var health = FindAnywhere<HealthDisplay>();
 
-        if (powers == null || powers.gridLayoutGroup == null || health == null)
+        // The menu's own grid field stays null until it has been opened once, so take the
+        // grid off its children instead, inactive ones included.
+        var grid = powers == null
+            ? null
+            : powers.gridLayoutGroup != null
+                ? powers.gridLayoutGroup
+                : powers.GetComponentInChildren<GridLayoutGroup>(true);
+
+        if (powers == null || grid == null || health == null)
         {
             if (Time.frameCount % 300 != 0) return;
 
             ModHelper.Warning<Main>($"[vs] waiting for the game's ui: powers menu " +
                                     $"{(powers == null ? "missing" : "found")}, grid " +
-                                    $"{(powers?.gridLayoutGroup == null ? "missing" : "found")}, " +
+                                    $"{(grid == null ? "missing" : "found")}, " +
                                     $"health display {(health == null ? "missing" : "found")}");
             return;
         }
@@ -299,7 +307,7 @@ public class Main : BloonsTD6Mod
             ModHelper.Msg<Main>("[vs] powers menu was hidden, switched on for the send panel");
         }
 
-        BuildSends(powers.gridLayoutGroup.transform);
+        BuildSends(grid.transform);
         BuildLives(health);
         built = true;
     }
