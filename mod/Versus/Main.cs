@@ -59,6 +59,23 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
+    private static readonly ModSettingInt SendCostEach = new(25)
+    {
+        displayName = "Cash each sent bloon costs",
+        min = 0,
+        max = 100000,
+        slider = false
+    };
+
+    private static readonly ModSettingInt EcoPerSend = new(10)
+    {
+        displayName = "Income each send adds",
+        description = "Paid out to the sender at the start of every round, Battles style.",
+        min = 0,
+        max = 10000,
+        slider = false
+    };
+
     private static readonly ModSettingInt StartingLives = new(100)
     {
         displayName = "Lives each side starts with",
@@ -83,6 +100,9 @@ public class Main : BloonsTD6Mod
         public int Remaining { get; set; } = remaining;
     }
 
+    private static readonly Dictionary<int, int> Eco = new();
+    private static int loser;
+
     private static GameObject hudObject;
     private static ModHelperText hudText;
 
@@ -96,8 +116,28 @@ public class Main : BloonsTD6Mod
         sendsSeen = 0;
         bloonsSpawned = 0;
         Lives.Clear();
+        Eco.Clear();
         SentBloonOwner.Clear();
         Pending.Clear();
+        loser = 0;
+    }
+
+    /// Income is paid inside a hook the simulation drives, so every client pays the same
+    /// players the same cash on the same tick without anything crossing the wire.
+    public override void OnRoundStart()
+    {
+        if (!InVersusGame(out var simulation)) return;
+
+        foreach (var entry in Eco)
+        {
+            if (entry.Value <= 0) continue;
+
+            var wallet = simulation.GetCashManager(entry.Key)?.cash;
+            if (wallet == null) continue;
+
+            wallet.Value += entry.Value;
+            ModHelper.Msg<Main>($"[vs] player {entry.Key} earns {entry.Value} income, now on {(long) wallet.Value}");
+        }
     }
 
     public override void OnMatchEnd() => Teardown();
@@ -136,7 +176,10 @@ public class Main : BloonsTD6Mod
         ModHelper.Msg<Main>($"[vs] player {victim} leaked a sent {bloon.bloonModel?.id} from player {sender}, " +
                             $"-{damage}, now on {LivesOf(victim)}");
 
-        if (LivesOf(victim) <= 0) ModHelper.Msg<Main>($"[vs] player {victim} is out, player {sender} wins");
+        if (LivesOf(victim) > 0 || loser != 0) return;
+
+        loser = victim;
+        ModHelper.Msg<Main>($"[vs] player {victim} is out, player {sender} wins");
     }
 
     public override void OnUpdate()
@@ -174,8 +217,19 @@ public class Main : BloonsTD6Mod
 
         var me = inGame.bridge.GetInputId();
         var them = Opponent(me);
-        hudText.SetText($"you {LivesOf(me)}   them {LivesOf(them)}");
-        hudText.Text.color = LivesOf(me) <= 0 ? new Color(1f, 0.4f, 0.4f, 0.9f) : new Color(1f, 1f, 1f, 0.75f);
+
+        if (loser != 0)
+        {
+            hudText.SetText(loser == me ? "you lose" : "you win");
+            hudText.Text.color = loser == me
+                ? new Color(1f, 0.4f, 0.4f, 0.95f)
+                : new Color(0.5f, 1f, 0.5f, 0.95f);
+            return;
+        }
+
+        hudText.SetText($"you {LivesOf(me)} lives, {EcoOf(me)} income" +
+                        $"      them {LivesOf(them)} lives, {EcoOf(them)} income");
+        hudText.Text.color = new Color(1f, 1f, 1f, 0.75f);
     }
 
     private static void Teardown()
@@ -186,6 +240,17 @@ public class Main : BloonsTD6Mod
     }
 
     private static int LivesOf(int player) => Lives.TryGetValue(player, out var lives) ? lives : StartingLives;
+
+    private static int EcoOf(int player) => Eco.TryGetValue(player, out var eco) ? eco : 0;
+
+    private static Il2CppAssets.Scripts.Simulation.Simulation Sim =>
+        InGame.instance?.bridge?.Simulation;
+
+    private static bool InVersusGame(out Il2CppAssets.Scripts.Simulation.Simulation simulation)
+    {
+        simulation = Sim;
+        return simulation != null;
+    }
 
     /// Two sided for now: whoever is not the sender.
     private static int Opponent(int sender) => sender == 1 ? 2 : 1;
@@ -219,13 +284,33 @@ public class Main : BloonsTD6Mod
                 var count = int.Parse(parts[1]);
                 var spacing = int.Parse(parts[2]) / 1000f;
 
+                var sender = __instance.peerId;
+                var cost = count * (int) SendCostEach;
+                var wallet = Sim?.GetCashManager(sender)?.cash;
+
+                if (loser != 0)
+                {
+                    ModHelper.Msg<Main>("[vs] the match is over, send ignored");
+                    return false;
+                }
+
+                if (wallet == null || wallet.Value < cost)
+                {
+                    ModHelper.Msg<Main>($"[vs] player {sender} cannot afford {cost}, send refused");
+                    return false;
+                }
+
+                wallet.Value -= cost;
+                Eco[sender] = EcoOf(sender) + (int) EcoPerSend;
+
                 InGame.instance.SpawnBloons(bloon, count, spacing);
-                Pending.Add(new PendingSend(__instance.peerId, bloon, count));
+                Pending.Add(new PendingSend(sender, bloon, count));
 
                 sendsSeen++;
                 bloonsSpawned += count;
                 ModHelper.Msg<Main>($"[vs] send {sendsSeen} applied on round {uts.GetCurrentRound() + 1}: " +
-                                    $"{count} {bloon} from player {__instance.peerId}, {bloonsSpawned} sent this match");
+                                    $"{count} {bloon} from player {sender} for {cost}, " +
+                                    $"income now {EcoOf(sender)}, {bloonsSpawned} sent this match");
             }
             catch (Exception e)
             {
