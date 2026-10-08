@@ -2,12 +2,15 @@ using System;
 using System.Collections.Generic;
 using BTD_Mod_Helper;
 using BTD_Mod_Helper.Api.Components;
+using BTD_Mod_Helper.Api.Enums;
 using BTD_Mod_Helper.Api.ModOptions;
 using BTD_Mod_Helper.Extensions;
 using HarmonyLib;
 using Il2CppAssets.Scripts.Simulation.Bloons;
+using Il2CppAssets.Scripts.Unity;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
+using Il2CppAssets.Scripts.Unity.UI_New.InGame.Stats;
 using MelonLoader;
 using UnityEngine;
 using UnityEngine.UI;
@@ -19,62 +22,17 @@ using UnityEngine.UI;
 
 namespace BTD6Versus;
 
-// Step one of a versus mode: can one player push bloons at the other without the two
-// simulations drifting apart?
+// Versus for BTD6, in the shape Bloons TD Battles had it: buy bloons, push them at the
+// other player, live off the income the sends earn you.
 //
-// There is no networked action for spawning bloons. Calling the simulation's SpawnBloons
-// locally would desync immediately, because only one machine would do it. What does travel
-// is SendEmoteAction, which carries an arbitrary string and, like every gameplay action,
-// runs inside the lockstep on every client at the same tick. So the send rides in that
-// string: the sender asks for an emote, and every client's copy of the action spawns the
-// identical bloons at the identical moment.
+// Nothing about a send travels as custom data. There is no networked action for spawning
+// bloons, so a local spawn would desync; instead the send rides in the string that
+// SendEmoteAction already carries, and that action runs inside the lockstep on every
+// client at the same tick. The same goes for the money and the lives: every client derives
+// them from identical events, so the two machines agree without anything extra on the wire.
 public class Main : BloonsTD6Mod
 {
     private const string Marker = "VS|";
-
-    private static readonly ModSettingHotkey SendKey = new(KeyCode.B, HotkeyModifier.Shift)
-    {
-        displayName = "Send a batch of bloons"
-    };
-
-    private static readonly ModSettingString BloonType = new("Red")
-    {
-        displayName = "Bloon to send",
-        description = "A bloon id as the game spells it: Red, Blue, Pink, Ceramic, Moab."
-    };
-
-    private static readonly ModSettingInt BloonCount = new(10)
-    {
-        displayName = "How many",
-        min = 1,
-        max = 200,
-        slider = false
-    };
-
-    private static readonly ModSettingInt SpacingMs = new(200)
-    {
-        displayName = "Gap between them in milliseconds",
-        min = 0,
-        max = 5000,
-        slider = false
-    };
-
-    private static readonly ModSettingInt SendCostEach = new(25)
-    {
-        displayName = "Cash each sent bloon costs",
-        min = 0,
-        max = 100000,
-        slider = false
-    };
-
-    private static readonly ModSettingInt EcoPerSend = new(10)
-    {
-        displayName = "Income each send adds",
-        description = "Paid out to the sender at the start of every round, Battles style.",
-        min = 0,
-        max = 10000,
-        slider = false
-    };
 
     private static readonly ModSettingInt StartingLives = new(100)
     {
@@ -84,12 +42,24 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
-    private static int sendsSeen;
-    private static int bloonsSpawned;
+    private static readonly ModSettingDouble PriceScale = new(1.0)
+    {
+        displayName = "Price multiplier",
+        description = "Battles prices are small next to BTD6 cash. Raise this to make sends bite.",
+        minValue = 0.1,
+        maxValue = 50
+    };
 
-    // Every client runs the same hooks in the same order inside the lockstep, so both
-    // machines arrive at the same numbers without any of this being sent anywhere.
+    private static readonly ModSettingBool ShowPanel = new(true)
+    {
+        displayName = "Show the send panel in game"
+    };
+
+    private static int sendsSeen;
+    private static int loser;
+
     private static readonly Dictionary<int, int> Lives = new();
+    private static readonly Dictionary<int, int> Income = new();
     private static readonly Dictionary<IntPtr, int> SentBloonOwner = new();
     private static readonly List<PendingSend> Pending = new();
 
@@ -100,35 +70,34 @@ public class Main : BloonsTD6Mod
         public int Remaining { get; set; } = remaining;
     }
 
-    private static readonly Dictionary<int, int> Eco = new();
-    private static int loser;
-
     private static GameObject hudObject;
-    private static ModHelperText hudText;
+    private static ModHelperText scoreText;
+    private static readonly List<ModHelperText> ButtonCosts = new();
 
-    public override void OnApplicationStart()
-    {
-        ModHelper.Msg<Main>("Versus probe loaded, Shift+B sends bloons.");
-    }
+    public override void OnApplicationStart() => ModHelper.Msg<Main>("Versus loaded.");
 
     public override void OnMatchStart()
     {
         sendsSeen = 0;
-        bloonsSpawned = 0;
+        loser = 0;
         Lives.Clear();
-        Eco.Clear();
+        Income.Clear();
         SentBloonOwner.Clear();
         Pending.Clear();
-        loser = 0;
     }
 
-    /// Income is paid inside a hook the simulation drives, so every client pays the same
-    /// players the same cash on the same tick without anything crossing the wire.
+    public override void OnMatchEnd() => Teardown();
+
+    public override void OnMainMenu() => Teardown();
+
+    /// Income arrives in a hook the simulation drives, so every client pays the same
+    /// players the same cash on the same tick.
     public override void OnRoundStart()
     {
-        if (!InVersusGame(out var simulation)) return;
+        var simulation = Sim;
+        if (simulation == null) return;
 
-        foreach (var entry in Eco)
+        foreach (var entry in Income)
         {
             if (entry.Value <= 0) continue;
 
@@ -136,17 +105,10 @@ public class Main : BloonsTD6Mod
             if (wallet == null) continue;
 
             wallet.Value += entry.Value;
-            ModHelper.Msg<Main>($"[vs] player {entry.Key} earns {entry.Value} income, now on {(long) wallet.Value}");
+            ModHelper.Msg<Main>($"[vs] player {entry.Key} earns {entry.Value}, now on {(long) wallet.Value}");
         }
     }
 
-    public override void OnMatchEnd() => Teardown();
-
-    public override void OnMainMenu() => Teardown();
-
-    /// A bloon that arrives right after a send, of the type that was sent, belongs to that
-    /// send. Sends are explicit and bursty, so taking them in order is enough; a bloon that
-    /// splits into children only counts for its own layer, which is a known gap.
     public override void OnBloonCreated(Bloon bloon)
     {
         if (Pending.Count == 0) return;
@@ -168,7 +130,6 @@ public class Main : BloonsTD6Mod
     {
         if (!SentBloonOwner.Remove(bloon.Pointer, out var sender)) return;
 
-        // A sent bloon that gets through costs the player it was aimed at, not the sender.
         var victim = Opponent(sender);
         var damage = (int) Math.Max(1, bloon.bloonModel.leakDamage);
         Lives[victim] = LivesOf(victim) - damage;
@@ -182,96 +143,32 @@ public class Main : BloonsTD6Mod
         ModHelper.Msg<Main>($"[vs] player {victim} is out, player {sender} wins");
     }
 
-    public override void OnUpdate()
+    public override void OnUpdate() => UpdateUi();
+
+    private static void Send(int index)
     {
-        UpdateHud();
-        SendOnHotkey();
-    }
-
-    /// Its own overlay canvas, the same shape as the co-op HUD, because the vanilla lives
-    /// counter still shows the shared pool and means nothing here.
-    private static void UpdateHud()
-    {
-        var inGame = InGame.instance;
-        if (inGame == null || inGame.bridge == null || !inGame.IsInGame())
-        {
-            Teardown();
-            return;
-        }
-
-        if (hudObject == null)
-        {
-            hudObject = new GameObject("VersusLives");
-            var canvas = hudObject.AddComponent<Canvas>();
-            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-            canvas.sortingOrder = 50;
-
-            var scaler = hudObject.AddComponent<CanvasScaler>();
-            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-            scaler.referenceResolution = new Vector2(1920, 1080);
-            scaler.matchWidthOrHeight = 0.5f;
-
-            hudText = hudObject.AddText(new Info("VersusLivesText", 50, -140, 700, 48, new Vector2(0, 1)),
-                "", 40, Il2CppTMPro.TextAlignmentOptions.Left);
-        }
-
-        var me = inGame.bridge.GetInputId();
-        var them = Opponent(me);
-
-        if (loser != 0)
-        {
-            hudText.SetText(loser == me ? "you lose" : "you win");
-            hudText.Text.color = loser == me
-                ? new Color(1f, 0.4f, 0.4f, 0.95f)
-                : new Color(0.5f, 1f, 0.5f, 0.95f);
-            return;
-        }
-
-        hudText.SetText($"you {LivesOf(me)} lives, {EcoOf(me)} income" +
-                        $"      them {LivesOf(them)} lives, {EcoOf(them)} income");
-        hudText.Text.color = new Color(1f, 1f, 1f, 0.75f);
-    }
-
-    private static void Teardown()
-    {
-        if (hudObject != null) UnityEngine.Object.Destroy(hudObject);
-        hudObject = null;
-        hudText = null;
-    }
-
-    private static int LivesOf(int player) => Lives.TryGetValue(player, out var lives) ? lives : StartingLives;
-
-    private static int EcoOf(int player) => Eco.TryGetValue(player, out var eco) ? eco : 0;
-
-    private static Il2CppAssets.Scripts.Simulation.Simulation Sim =>
-        InGame.instance?.bridge?.Simulation;
-
-    private static bool InVersusGame(out Il2CppAssets.Scripts.Simulation.Simulation simulation)
-    {
-        simulation = Sim;
-        return simulation != null;
-    }
-
-    /// Two sided for now: whoever is not the sender.
-    private static int Opponent(int sender) => sender == 1 ? 2 : 1;
-
-    private static void SendOnHotkey()
-    {
-        if (!SendKey.JustPressed()) return;
-
         var inGame = InGame.instance;
         if (inGame == null || inGame.bridge == null || !inGame.IsInGame()) return;
 
-        var payload = $"{Marker}{(string) BloonType}|{(int) BloonCount}|{(int) SpacingMs}";
         var me = inGame.bridge.GetInputId();
-        inGame.bridge.SendEmote(me, me, payload);
-        ModHelper.Msg<Main>($"[vs] player {me} asked to send {payload}");
+        inGame.bridge.SendEmote(me, me, $"{Marker}{index}");
     }
+
+    private static int CostOf(SendType send) => (int) Math.Round(send.Cost * (double) PriceScale);
+
+    private static int LivesOf(int player) => Lives.TryGetValue(player, out var lives) ? lives : StartingLives;
+
+    private static int IncomeOf(int player) => Income.TryGetValue(player, out var income) ? income : 0;
+
+    private static Il2CppAssets.Scripts.Simulation.Simulation Sim => InGame.instance?.bridge?.Simulation;
+
+    private static int Opponent(int sender) => sender == 1 ? 2 : 1;
 
     [HarmonyPatch(typeof(UnityToSimulation.SendEmoteAction), nameof(UnityToSimulation.SendEmoteAction.Run))]
     private static class SendEmotePatch
     {
-        /// Runs on every client at the same simulation tick, which is the whole point.
+        /// Runs on every client at the same simulation tick, which is what keeps the two
+        /// games agreeing about who paid what and what got spawned.
         private static bool Prefix(UnityToSimulation.SendEmoteAction __instance, UnityToSimulation uts)
         {
             var emote = __instance.emoteId;
@@ -279,38 +176,29 @@ public class Main : BloonsTD6Mod
 
             try
             {
-                var parts = emote.Substring(Marker.Length).Split('|');
-                var bloon = parts[0];
-                var count = int.Parse(parts[1]);
-                var spacing = int.Parse(parts[2]) / 1000f;
-
+                var index = int.Parse(emote.Substring(Marker.Length));
+                var send = SendType.All[index];
                 var sender = __instance.peerId;
-                var cost = count * (int) SendCostEach;
+                var cost = CostOf(send);
                 var wallet = Sim?.GetCashManager(sender)?.cash;
 
-                if (loser != 0)
-                {
-                    ModHelper.Msg<Main>("[vs] the match is over, send ignored");
-                    return false;
-                }
+                if (loser != 0) return false;
 
                 if (wallet == null || wallet.Value < cost)
                 {
-                    ModHelper.Msg<Main>($"[vs] player {sender} cannot afford {cost}, send refused");
+                    ModHelper.Msg<Main>($"[vs] player {sender} cannot afford {send.Label} at {cost}");
                     return false;
                 }
 
                 wallet.Value -= cost;
-                Eco[sender] = EcoOf(sender) + (int) EcoPerSend;
-
-                InGame.instance.SpawnBloons(bloon, count, spacing);
-                Pending.Add(new PendingSend(sender, bloon, count));
+                Income[sender] = IncomeOf(sender) + send.Income;
+                InGame.instance.SpawnBloons(send.Bloon, send.Count, 0.3f);
+                Pending.Add(new PendingSend(sender, send.Bloon, send.Count));
 
                 sendsSeen++;
-                bloonsSpawned += count;
-                ModHelper.Msg<Main>($"[vs] send {sendsSeen} applied on round {uts.GetCurrentRound() + 1}: " +
-                                    $"{count} {bloon} from player {sender} for {cost}, " +
-                                    $"income now {EcoOf(sender)}, {bloonsSpawned} sent this match");
+                ModHelper.Msg<Main>($"[vs] send {sendsSeen} on round {uts.GetCurrentRound() + 1}: " +
+                                    $"player {sender} paid {cost} for {send.Count} {send.Label}, " +
+                                    $"income now {IncomeOf(sender)}");
             }
             catch (Exception e)
             {
@@ -319,5 +207,97 @@ public class Main : BloonsTD6Mod
 
             return false;
         }
+    }
+
+    private static void UpdateUi()
+    {
+        var inGame = InGame.instance;
+        if (inGame == null || inGame.bridge == null || !inGame.IsInGame() || !ShowPanel)
+        {
+            Teardown();
+            return;
+        }
+
+        if (hudObject == null) Build();
+
+        var me = inGame.bridge.GetInputId();
+        var them = Opponent(me);
+
+        if (loser != 0)
+        {
+            scoreText.SetText(loser == me ? "DEFEAT" : "VICTORY");
+            scoreText.Text.color = loser == me ? new Color(1f, 0.45f, 0.45f) : new Color(0.55f, 1f, 0.55f);
+        }
+        else
+        {
+            scoreText.SetText($"You  {LivesOf(me)} lives   +{IncomeOf(me)}        " +
+                              $"Them  {LivesOf(them)} lives   +{IncomeOf(them)}");
+            scoreText.Text.color = Color.white;
+        }
+
+        var cash = Sim?.GetCashManager(me)?.cash?.Value ?? 0;
+        for (var i = 0; i < ButtonCosts.Count; i++)
+        {
+            var cost = CostOf(SendType.All[i]);
+            ButtonCosts[i].SetText(CashDisplay.LocalizeAndFormatCash(cost));
+            ButtonCosts[i].Text.color = cash >= cost ? Color.white : new Color(1f, 0.5f, 0.5f);
+        }
+    }
+
+    /// Built from the game's own art: vanilla panel and button sprites, and each bloon's
+    /// own icon straight off its model, so it reads as part of the game rather than an
+    /// overlay bolted on top.
+    private static void Build()
+    {
+        hudObject = new GameObject("VersusUi");
+        var canvas = hudObject.AddComponent<Canvas>();
+        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+        canvas.sortingOrder = 50;
+
+        var scaler = hudObject.AddComponent<CanvasScaler>();
+        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+        scaler.referenceResolution = new Vector2(1920, 1080);
+        scaler.matchWidthOrHeight = 0.5f;
+
+        var scorePanel = hudObject.AddModHelperPanel(
+            new Info("VersusScore", 0, -90, 1100, 110, new Vector2(0.5f, 1)), VanillaSprites.MainBGPanelBlue);
+        scoreText = scorePanel.AddText(new Info("VersusScoreText", InfoPreset.FillParent), "", 42);
+
+        var bar = hudObject.AddModHelperPanel(
+            new Info("VersusSends", 0, 150, 1500, 210, new Vector2(0.5f, 0)),
+            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Horizontal, 10, 20);
+
+        ButtonCosts.Clear();
+        var model = Game.instance.model;
+        for (var i = 0; i < SendType.All.Length; i++)
+        {
+            var send = SendType.All[i];
+            var index = i;
+
+            var cell = bar.AddPanel(new Info($"Send{i}", 140, 170), null, RectTransform.Axis.Vertical, 2);
+            var button = cell.AddButton(new Info($"SendBtn{i}", 130, 110), VanillaSprites.BlueInsertPanelRound,
+                new Action(() => Send(index)));
+
+            var bloon = model?.GetBloon(send.Bloon);
+            if (bloon?.icon != null)
+            {
+                button.AddImage(new Info($"SendIcon{i}", 90), bloon.icon.GetGUID());
+            }
+            else
+            {
+                button.AddText(new Info($"SendName{i}", 120, 60), send.Label, 28);
+            }
+
+            cell.AddText(new Info($"SendLabel{i}", 140, 26), $"x{send.Count}  +{send.Income}", 22);
+            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 140, 30), "", 26));
+        }
+    }
+
+    private static void Teardown()
+    {
+        if (hudObject != null) UnityEngine.Object.Destroy(hudObject);
+        hudObject = null;
+        scoreText = null;
+        ButtonCosts.Clear();
     }
 }
