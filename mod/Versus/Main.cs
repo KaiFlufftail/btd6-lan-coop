@@ -258,14 +258,46 @@ public class Main : BloonsTD6Mod
         return $"{who} {LivesOf(player)}  +{IncomeOf(player)}";
     }
 
+    /// FindObjectOfType only sees active objects, and the powers menu and the sandbox
+    /// bloon menu are both switched off until opened, so everything here has to search the
+    /// inactive ones too.
+    private static T FindAnywhere<T>() where T : Component
+    {
+        foreach (var found in UnityEngine.Resources.FindObjectsOfTypeAll<T>())
+        {
+            if (found != null && found.gameObject.scene.IsValid()) return found;
+        }
+
+        return null;
+    }
+
     /// Takes over the game's own furniture rather than drawing beside it: the send buttons
     /// go into the powers menu's grid, so they sit where powers sat and inherit its layout,
     /// and the two life counters are clones of the real one stacked where it was.
     private static void Build()
     {
-        var powers = UnityEngine.Object.FindObjectOfType<PowersMenu>();
-        var health = UnityEngine.Object.FindObjectOfType<HealthDisplay>();
-        if (powers == null || powers.gridLayoutGroup == null || health == null) return;
+        var powers = FindAnywhere<PowersMenu>();
+        var health = FindAnywhere<HealthDisplay>();
+
+        if (powers == null || powers.gridLayoutGroup == null || health == null)
+        {
+            if (Time.frameCount % 300 != 0) return;
+
+            ModHelper.Warning<Main>($"[vs] waiting for the game's ui: powers menu " +
+                                    $"{(powers == null ? "missing" : "found")}, grid " +
+                                    $"{(powers?.gridLayoutGroup == null ? "missing" : "found")}, " +
+                                    $"health display {(health == null ? "missing" : "found")}");
+            return;
+        }
+
+        // The powers menu hides itself until its tab is opened, and the send buttons are no
+        // use inside something switched off.
+        var menuRoot = powers.gameObject;
+        if (!menuRoot.active)
+        {
+            menuRoot.SetActive(true);
+            ModHelper.Msg<Main>("[vs] powers menu was hidden, switched on for the send panel");
+        }
 
         BuildSends(powers.gridLayoutGroup.transform);
         BuildLives(health);
@@ -284,7 +316,7 @@ public class Main : BloonsTD6Mod
         }
 
         var model = InGame.instance.bridge?.Model ?? Game.instance.model;
-        var bloonMenu = UnityEngine.Object.FindObjectOfType<BloonMenu>();
+        var bloonMenu = FindAnywhere<BloonMenu>();
         var prefab = bloonMenu?.spawnBloonButtonPrefab;
 
         ButtonCosts.Clear();
