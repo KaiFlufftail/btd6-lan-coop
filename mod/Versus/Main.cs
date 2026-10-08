@@ -11,6 +11,7 @@ using Il2CppAssets.Scripts.Simulation.Bloons;
 using Il2CppAssets.Scripts.Unity;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
+using Il2CppAssets.Scripts.Unity.UI_New.InGame.BloonMenu;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame.RightMenu.Powers;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame.Stats;
 using MelonLoader;
@@ -75,6 +76,7 @@ public class Main : BloonsTD6Mod
     private static readonly List<ModHelperText> ButtonCosts = new();
     private static readonly List<GameObject> OurObjects = new();
     private static readonly List<GameObject> HiddenVanilla = new();
+    private static readonly List<SpawnBloonButton> SpawnButtons = new();
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
@@ -233,6 +235,13 @@ public class Main : BloonsTD6Mod
         if (p1Text != null) p1Text.text = Readout(me, me);
         if (p2Text != null) p2Text.text = Readout(them, me);
 
+        // The cloned buttons keep their own interactable logic, which is written for
+        // sandbox and would grey them out here.
+        foreach (var spawnButton in SpawnButtons)
+        {
+            if (spawnButton?.Button != null) spawnButton.Button.interactable = true;
+        }
+
         var cash = Sim?.GetCashManager(me)?.cash?.Value ?? 0;
         for (var i = 0; i < ButtonCosts.Count; i++)
         {
@@ -274,28 +283,55 @@ public class Main : BloonsTD6Mod
             HiddenVanilla.Add(child);
         }
 
-        var model = Game.instance.model;
+        var model = InGame.instance.bridge?.Model ?? Game.instance.model;
+        var bloonMenu = UnityEngine.Object.FindObjectOfType<BloonMenu>();
+        var prefab = bloonMenu?.spawnBloonButtonPrefab;
+
         ButtonCosts.Clear();
+        SpawnButtons.Clear();
 
         for (var i = 0; i < SendType.All.Length; i++)
         {
             var send = SendType.All[i];
             var index = i;
+            var bloon = model?.GetBloon(send.Bloon);
 
             var cell = grid.gameObject.AddModHelperPanel(new Info($"Send{i}", InfoPreset.Flex), null,
                 RectTransform.Axis.Vertical, 0);
             OurObjects.Add(cell.gameObject);
 
-            var button = cell.AddButton(new Info($"SendBtn{i}", InfoPreset.Flex),
-                VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
+            // The game's own spawn-bloon button already carries that bloon's artwork and
+            // loads it the way the game does, so clone one rather than hunting the sprite.
+            var spawnButton = prefab == null
+                ? null
+                : UnityEngine.Object.Instantiate(prefab, cell.transform).GetComponent<SpawnBloonButton>();
 
-            var bloon = model?.GetBloon(send.Bloon);
-            if (bloon?.icon != null) button.AddImage(new Info($"SendIcon{i}", InfoPreset.FillParent), bloon.icon.GetGUID());
-            else button.AddText(new Info($"SendName{i}", InfoPreset.FillParent), send.Label, 24);
+            if (spawnButton != null && bloon != null)
+            {
+                spawnButton.SetBloon(bloon, bloonMenu.bloonCount, bloonMenu.bloonRate, bloonMenu.roundDetails);
+
+                // Its own handler spawns a bloon locally, which would desync at once.
+                var button = spawnButton.Button;
+                button.onClick = new Button.ButtonClickedEvent();
+                button.onClick.AddListener(new Action(() => Send(index)));
+                SpawnButtons.Add(spawnButton);
+            }
+            else
+            {
+                var fallback = cell.AddButton(new Info($"SendBtn{i}", InfoPreset.Flex),
+                    VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
+                if (bloon?.icon != null)
+                    fallback.AddImage(new Info($"SendIcon{i}", InfoPreset.FillParent), bloon.icon.GetGUID());
+                else
+                    fallback.AddText(new Info($"SendName{i}", InfoPreset.FillParent), send.Label, 24);
+            }
 
             ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 120, 32), "", 26));
             cell.AddText(new Info($"SendInfo{i}", 120, 26), $"x{send.Count}  +{send.Income}", 20);
         }
+
+        ModHelper.Msg<Main>($"[vs] send panel built, {SpawnButtons.Count} of {SendType.All.Length} " +
+                            "buttons using the game's own bloon art");
     }
 
     private static void BuildLives(HealthDisplay health)
@@ -343,6 +379,7 @@ public class Main : BloonsTD6Mod
         OurObjects.Clear();
         HiddenVanilla.Clear();
         ButtonCosts.Clear();
+        SpawnButtons.Clear();
         p1Text = null;
         p2Text = null;
         built = false;

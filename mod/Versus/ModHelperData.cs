@@ -3,13 +3,14 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.5.0";
+    public const string Version = "0.6.0";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
         "Versus for BTD6, in the shape Bloons TD Battles had it.<br><br>" +
         "The send buttons take over the powers menu on the right, so they sit where powers " +
-        "sat and inherit its layout: each carries that bloon's own icon, its price and the " +
+        "sat and inherit its layout. Each button is a clone of the game's own spawn-bloon " +
+        "button, so it carries that bloon's real artwork, with its price and the " +
         "income it earns. The lives counter is replaced by two copies of the real one, " +
         "stacked, yours above and theirs below.<br><br>" +
         "Prices come from Bloons TD Battles: reds 25, blues 42, greens 60, yellows 75, pinks " +
