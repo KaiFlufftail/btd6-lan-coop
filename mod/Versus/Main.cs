@@ -58,6 +58,22 @@ public class Main : BloonsTD6Mod
         displayName = "Show the send panel in game"
     };
 
+    private static readonly ModSettingInt PanelY = new(40)
+    {
+        displayName = "Send panel height above the bottom edge",
+        min = 0,
+        max = 900,
+        slider = false
+    };
+
+    private static readonly ModSettingInt LivesY = new(240)
+    {
+        displayName = "Lives panel distance below the top edge",
+        min = 0,
+        max = 900,
+        slider = false
+    };
+
     private static int sendsSeen;
     private static int loser;
 
@@ -74,8 +90,7 @@ public class Main : BloonsTD6Mod
     }
 
     private static readonly List<ModHelperText> ButtonCosts = new();
-    private static readonly List<GameObject> OurObjects = new();
-    private static readonly List<GameObject> HiddenVanilla = new();
+    private static GameObject hudObject;
     private static readonly List<SpawnBloonButton> SpawnButtons = new();
 
     private static NK_TextMeshProUGUI p1Text;
@@ -258,58 +273,44 @@ public class Main : BloonsTD6Mod
         return $"{who} {LivesOf(player)}  +{IncomeOf(player)}";
     }
 
-    /// FindObjectOfType only sees active objects, and the powers menu and the sandbox
-    /// bloon menu are both switched off until opened, so everything here has to search the
-    /// inactive ones too.
+    /// FindObjectOfType only sees active objects, and much of the game's interface is
+    /// switched off until opened, so everything here has to search the inactive ones too.
     private static T FindAnywhere<T>() where T : Component
     {
         foreach (var found in UnityEngine.Resources.FindObjectsOfTypeAll<T>())
         {
-            if (found != null && found.gameObject.scene.IsValid()) return found;
+            if (found is not null && found.gameObject.scene.IsValid()) return found;
         }
 
         return null;
     }
 
-    /// Takes over the game's own furniture rather than drawing beside it: the send buttons
-    /// go into the powers menu's grid, so they sit where powers sat and inherit its layout,
-    /// and the two life counters are clones of the real one stacked where it was.
+    /// Everything lives on the mod's own canvas. An earlier version put the buttons inside
+    /// the powers menu and cloned the lives counter into the top bar's horizontal layout
+    /// group; the buttons ended up hidden in the insta monkeys scroll and the counters laid
+    /// out sideways. The game's art is reused, its containers are not.
     private static void Build()
     {
-        var powers = FindAnywhere<PowersMenu>();
         var health = FindAnywhere<HealthDisplay>();
-
-        // The menu's own grid field stays null until it has been opened once, so take the
-        // grid off its children instead, inactive ones included.
-        var grid = powers == null
-            ? null
-            : powers.gridLayoutGroup != null
-                ? powers.gridLayoutGroup
-                : powers.GetComponentInChildren<GridLayoutGroup>(true);
-
-        if (powers == null || grid == null || health == null)
+        if (health is null)
         {
-            if (Time.frameCount % 300 != 0) return;
-
-            ModHelper.Warning<Main>($"[vs] waiting for the game's ui: powers menu " +
-                                    $"{(powers == null ? "missing" : "found")}, grid " +
-                                    $"{(grid == null ? "missing" : "found")}, " +
-                                    $"health display {(health == null ? "missing" : "found")}");
+            if (Time.frameCount % 300 == 0) ModHelper.Warning<Main>("[vs] waiting for the health display");
             return;
-        }
-
-        // The powers menu hides itself until its tab is opened, and the send buttons are no
-        // use inside something switched off.
-        var menuRoot = powers.gameObject;
-        if (!menuRoot.active)
-        {
-            menuRoot.SetActive(true);
-            ModHelper.Msg<Main>("[vs] powers menu was hidden, switched on for the send panel");
         }
 
         try
         {
-            BuildSends(grid.transform);
+            hudObject = new GameObject("VersusUi");
+            var canvas = hudObject.AddComponent<Canvas>();
+            canvas.renderMode = RenderMode.ScreenSpaceOverlay;
+            canvas.sortingOrder = 40;
+
+            var scaler = hudObject.AddComponent<CanvasScaler>();
+            scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
+            scaler.referenceResolution = new Vector2(1920, 1080);
+            scaler.matchWidthOrHeight = 0.5f;
+
+            BuildSends();
             BuildLives(health);
             built = true;
         }
@@ -320,39 +321,27 @@ public class Main : BloonsTD6Mod
         }
     }
 
-    private static void BuildSends(Transform grid)
+    private static void BuildSends()
     {
-        for (var i = 0; i < grid.childCount; i++)
-        {
-            var child = grid.GetChild(i).gameObject;
-            if (!child.active) continue;
-
-            child.SetActive(false);
-            HiddenVanilla.Add(child);
-        }
-
         var model = InGame.instance.bridge?.Model ?? Game.instance.model;
         var bloonMenu = FindAnywhere<BloonMenu>();
         var prefab = bloonMenu is null ? null : bloonMenu.spawnBloonButtonPrefab;
-        if (prefab is null)
-            ModHelper.Warning<Main>($"[vs] no spawn bloon button prefab: bloon menu " +
-                                    $"{(bloonMenu is null ? "missing" : "found")}");
 
         ButtonCosts.Clear();
         SpawnButtons.Clear();
+
+        var bar = hudObject.AddModHelperPanel(
+            new Info("VersusSends", 0, PanelY, 1260, 170, new Vector2(0.5f, 0)),
+            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Horizontal, 6, 12);
 
         for (var i = 0; i < SendType.All.Length; i++)
         {
             var send = SendType.All[i];
             var index = i;
-            var bloon = model?.GetBloon(send.Bloon);
+            var bloon = model is null ? null : model.GetBloon(send.Bloon);
 
-            var cell = grid.gameObject.AddModHelperPanel(new Info($"Send{i}", InfoPreset.Flex), null,
-                RectTransform.Axis.Vertical, 0);
-            OurObjects.Add(cell.gameObject);
+            var cell = bar.AddPanel(new Info($"Send{i}", 118, 146), null, RectTransform.Axis.Vertical, 0);
 
-            // The game's own spawn-bloon button already carries that bloon's artwork and
-            // loads it the way the game does, so clone one rather than hunting the sprite.
             var spawnButton = prefab is null
                 ? null
                 : UnityEngine.Object.Instantiate(prefab, cell.transform).GetComponent<SpawnBloonButton>();
@@ -361,7 +350,10 @@ public class Main : BloonsTD6Mod
             {
                 spawnButton.SetBloon(bloon, bloonMenu.bloonCount, bloonMenu.bloonRate, bloonMenu.roundDetails);
 
-                // Its own handler spawns a bloon locally, which would desync at once.
+                var rect = spawnButton.GetComponent<RectTransform>();
+                if (rect is not null) rect.sizeDelta = new Vector2(104, 104);
+
+                // Its own handler spawns locally, which would desync at once.
                 var button = spawnButton.Button;
                 button.onClick = new Button.ButtonClickedEvent();
                 button.onClick.AddListener(new Action(() => Send(index)));
@@ -373,70 +365,58 @@ public class Main : BloonsTD6Mod
                                         $"{(prefab is null ? "missing" : "found")}, bloon model " +
                                         $"{(bloon is null ? "missing" : "found")}");
 
-                var fallback = cell.AddButton(new Info($"SendBtn{i}", InfoPreset.Flex),
+                var fallback = cell.AddButton(new Info($"SendBtn{i}", 104, 104),
                     VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
-
-                var icon = bloon is null ? null : bloon.icon;
-                var guid = icon is null ? null : icon.GetGUID();
-
-                if (!string.IsNullOrEmpty(guid))
-                    fallback.AddImage(new Info($"SendIcon{i}", InfoPreset.FillParent), guid);
-                else
-                    fallback.AddText(new Info($"SendName{i}", InfoPreset.FillParent), send.Label, 24);
+                fallback.AddText(new Info($"SendName{i}", 100, 50), send.Label, 22);
             }
 
-            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 120, 32), "", 26));
-            cell.AddText(new Info($"SendInfo{i}", 120, 26), $"x{send.Count}  +{send.Income}", 20);
+            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 118, 26), "", 24));
+            cell.AddText(new Info($"SendInfo{i}", 118, 20), $"x{send.Count}  +{send.Income}", 18);
         }
 
         ModHelper.Msg<Main>($"[vs] send panel built, {SpawnButtons.Count} of {SendType.All.Length} " +
                             "buttons using the game's own bloon art");
     }
 
+    /// Two copies of the real lives widget in the mod's own container, stacked, rather than
+    /// dropped into the top bar's horizontal layout where they would sit side by side.
     private static void BuildLives(HealthDisplay health)
     {
-        var source = health.gameObject;
-        var parent = source.transform.parent;
+        var group = health.transform.parent;
+        var column = hudObject.AddModHelperPanel(
+            new Info("VersusLives", 150, -LivesY, 520, 320, new Vector2(0, 1)), null,
+            RectTransform.Axis.Vertical, 10);
 
-        p1Text = CloneCounter(source, parent, "VersusLivesP1", 0f);
-        p2Text = CloneCounter(source, parent, "VersusLivesP2", -70f);
-
-        source.SetActive(false);
-        HiddenVanilla.Add(source);
+        p1Text = CloneCounter(group.gameObject, column.transform, "VersusLivesP1");
+        p2Text = CloneCounter(group.gameObject, column.transform, "VersusLivesP2");
     }
 
-    /// A copy of the real counter with its own behaviour stripped out, so it keeps the
-    /// game's heart and lettering but shows a number the mod owns.
-    private static NK_TextMeshProUGUI CloneCounter(GameObject source, Transform parent, string name, float yOffset)
+    private static NK_TextMeshProUGUI CloneCounter(GameObject source, Transform parent, string name)
     {
         var clone = UnityEngine.Object.Instantiate(source, parent);
         clone.name = name;
         clone.SetActive(true);
-        OurObjects.Add(clone);
 
-        var display = clone.GetComponent<HealthDisplay>();
-        if (display is not null) UnityEngine.Object.Destroy(display);
+        foreach (var display in clone.GetComponentsInChildren<HealthDisplay>(true))
+        {
+            if (display is not null) UnityEngine.Object.Destroy(display);
+        }
 
         var rect = clone.GetComponent<RectTransform>();
-        if (rect is not null) rect.anchoredPosition = rect.anchoredPosition + new Vector2(0, yOffset);
+        if (rect is not null)
+        {
+            rect.anchorMin = new Vector2(0, 1);
+            rect.anchorMax = new Vector2(0, 1);
+            rect.anchoredPosition = Vector2.zero;
+        }
 
         return clone.GetComponentInChildren<NK_TextMeshProUGUI>();
     }
 
     private static void Teardown()
     {
-        foreach (var ours in OurObjects)
-        {
-            if (ours != null) UnityEngine.Object.Destroy(ours);
-        }
-
-        foreach (var vanilla in HiddenVanilla)
-        {
-            if (vanilla != null) vanilla.SetActive(true);
-        }
-
-        OurObjects.Clear();
-        HiddenVanilla.Clear();
+        if (hudObject is not null) UnityEngine.Object.Destroy(hudObject);
+        hudObject = null;
         ButtonCosts.Clear();
         SpawnButtons.Clear();
         p1Text = null;
