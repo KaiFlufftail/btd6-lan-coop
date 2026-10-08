@@ -6,10 +6,12 @@ using BTD_Mod_Helper.Api.Enums;
 using BTD_Mod_Helper.Api.ModOptions;
 using BTD_Mod_Helper.Extensions;
 using HarmonyLib;
+using Il2Cpp;
 using Il2CppAssets.Scripts.Simulation.Bloons;
 using Il2CppAssets.Scripts.Unity;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
+using Il2CppAssets.Scripts.Unity.UI_New.InGame.RightMenu.Powers;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame.Stats;
 using MelonLoader;
 using UnityEngine;
@@ -70,9 +72,13 @@ public class Main : BloonsTD6Mod
         public int Remaining { get; set; } = remaining;
     }
 
-    private static GameObject hudObject;
-    private static ModHelperText scoreText;
     private static readonly List<ModHelperText> ButtonCosts = new();
+    private static readonly List<GameObject> OurObjects = new();
+    private static readonly List<GameObject> HiddenVanilla = new();
+
+    private static NK_TextMeshProUGUI p1Text;
+    private static NK_TextMeshProUGUI p2Text;
+    private static bool built;
 
     public override void OnApplicationStart() => ModHelper.Msg<Main>("Versus loaded.");
 
@@ -218,86 +224,127 @@ public class Main : BloonsTD6Mod
             return;
         }
 
-        if (hudObject == null) Build();
+        if (!built) Build();
+        if (!built) return;
 
         var me = inGame.bridge.GetInputId();
         var them = Opponent(me);
 
-        if (loser != 0)
-        {
-            scoreText.SetText(loser == me ? "DEFEAT" : "VICTORY");
-            scoreText.Text.color = loser == me ? new Color(1f, 0.45f, 0.45f) : new Color(0.55f, 1f, 0.55f);
-        }
-        else
-        {
-            scoreText.SetText($"You  {LivesOf(me)} lives   +{IncomeOf(me)}        " +
-                              $"Them  {LivesOf(them)} lives   +{IncomeOf(them)}");
-            scoreText.Text.color = Color.white;
-        }
+        if (p1Text != null) p1Text.text = Readout(me, me);
+        if (p2Text != null) p2Text.text = Readout(them, me);
 
         var cash = Sim?.GetCashManager(me)?.cash?.Value ?? 0;
         for (var i = 0; i < ButtonCosts.Count; i++)
         {
             var cost = CostOf(SendType.All[i]);
             ButtonCosts[i].SetText(CashDisplay.LocalizeAndFormatCash(cost));
-            ButtonCosts[i].Text.color = cash >= cost ? Color.white : new Color(1f, 0.5f, 0.5f);
+            ButtonCosts[i].Text.color = cash >= cost ? Color.white : new Color(1f, 0.45f, 0.45f);
         }
     }
 
-    /// Built from the game's own art: vanilla panel and button sprites, and each bloon's
-    /// own icon straight off its model, so it reads as part of the game rather than an
-    /// overlay bolted on top.
+    private static string Readout(int player, int me)
+    {
+        var who = player == me ? "You" : "Them";
+        if (loser == player) return $"{who} out";
+        return $"{who} {LivesOf(player)}  +{IncomeOf(player)}";
+    }
+
+    /// Takes over the game's own furniture rather than drawing beside it: the send buttons
+    /// go into the powers menu's grid, so they sit where powers sat and inherit its layout,
+    /// and the two life counters are clones of the real one stacked where it was.
     private static void Build()
     {
-        hudObject = new GameObject("VersusUi");
-        var canvas = hudObject.AddComponent<Canvas>();
-        canvas.renderMode = RenderMode.ScreenSpaceOverlay;
-        canvas.sortingOrder = 50;
+        var powers = UnityEngine.Object.FindObjectOfType<PowersMenu>();
+        var health = UnityEngine.Object.FindObjectOfType<HealthDisplay>();
+        if (powers == null || powers.gridLayoutGroup == null || health == null) return;
 
-        var scaler = hudObject.AddComponent<CanvasScaler>();
-        scaler.uiScaleMode = CanvasScaler.ScaleMode.ScaleWithScreenSize;
-        scaler.referenceResolution = new Vector2(1920, 1080);
-        scaler.matchWidthOrHeight = 0.5f;
+        BuildSends(powers.gridLayoutGroup.transform);
+        BuildLives(health);
+        built = true;
+    }
 
-        var scorePanel = hudObject.AddModHelperPanel(
-            new Info("VersusScore", 0, -90, 1100, 110, new Vector2(0.5f, 1)), VanillaSprites.MainBGPanelBlue);
-        scoreText = scorePanel.AddText(new Info("VersusScoreText", InfoPreset.FillParent), "", 42);
+    private static void BuildSends(Transform grid)
+    {
+        for (var i = 0; i < grid.childCount; i++)
+        {
+            var child = grid.GetChild(i).gameObject;
+            if (!child.active) continue;
 
-        var bar = hudObject.AddModHelperPanel(
-            new Info("VersusSends", 0, 150, 1500, 210, new Vector2(0.5f, 0)),
-            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Horizontal, 10, 20);
+            child.SetActive(false);
+            HiddenVanilla.Add(child);
+        }
 
-        ButtonCosts.Clear();
         var model = Game.instance.model;
+        ButtonCosts.Clear();
+
         for (var i = 0; i < SendType.All.Length; i++)
         {
             var send = SendType.All[i];
             var index = i;
 
-            var cell = bar.AddPanel(new Info($"Send{i}", 140, 170), null, RectTransform.Axis.Vertical, 2);
-            var button = cell.AddButton(new Info($"SendBtn{i}", 130, 110), VanillaSprites.BlueInsertPanelRound,
-                new Action(() => Send(index)));
+            var cell = grid.gameObject.AddModHelperPanel(new Info($"Send{i}", InfoPreset.Flex), null,
+                RectTransform.Axis.Vertical, 0);
+            OurObjects.Add(cell.gameObject);
+
+            var button = cell.AddButton(new Info($"SendBtn{i}", InfoPreset.Flex),
+                VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
 
             var bloon = model?.GetBloon(send.Bloon);
-            if (bloon?.icon != null)
-            {
-                button.AddImage(new Info($"SendIcon{i}", 90), bloon.icon.GetGUID());
-            }
-            else
-            {
-                button.AddText(new Info($"SendName{i}", 120, 60), send.Label, 28);
-            }
+            if (bloon?.icon != null) button.AddImage(new Info($"SendIcon{i}", InfoPreset.FillParent), bloon.icon.GetGUID());
+            else button.AddText(new Info($"SendName{i}", InfoPreset.FillParent), send.Label, 24);
 
-            cell.AddText(new Info($"SendLabel{i}", 140, 26), $"x{send.Count}  +{send.Income}", 22);
-            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 140, 30), "", 26));
+            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 120, 32), "", 26));
+            cell.AddText(new Info($"SendInfo{i}", 120, 26), $"x{send.Count}  +{send.Income}", 20);
         }
+    }
+
+    private static void BuildLives(HealthDisplay health)
+    {
+        var source = health.gameObject;
+        var parent = source.transform.parent;
+
+        p1Text = CloneCounter(source, parent, "VersusLivesP1", 0f);
+        p2Text = CloneCounter(source, parent, "VersusLivesP2", -70f);
+
+        source.SetActive(false);
+        HiddenVanilla.Add(source);
+    }
+
+    /// A copy of the real counter with its own behaviour stripped out, so it keeps the
+    /// game's heart and lettering but shows a number the mod owns.
+    private static NK_TextMeshProUGUI CloneCounter(GameObject source, Transform parent, string name, float yOffset)
+    {
+        var clone = UnityEngine.Object.Instantiate(source, parent);
+        clone.name = name;
+        clone.SetActive(true);
+        OurObjects.Add(clone);
+
+        var display = clone.GetComponent<HealthDisplay>();
+        if (display != null) UnityEngine.Object.Destroy(display);
+
+        var rect = clone.GetComponent<RectTransform>();
+        if (rect != null) rect.anchoredPosition = rect.anchoredPosition + new Vector2(0, yOffset);
+
+        return clone.GetComponentInChildren<NK_TextMeshProUGUI>();
     }
 
     private static void Teardown()
     {
-        if (hudObject != null) UnityEngine.Object.Destroy(hudObject);
-        hudObject = null;
-        scoreText = null;
+        foreach (var ours in OurObjects)
+        {
+            if (ours != null) UnityEngine.Object.Destroy(ours);
+        }
+
+        foreach (var vanilla in HiddenVanilla)
+        {
+            if (vanilla != null) vanilla.SetActive(true);
+        }
+
+        OurObjects.Clear();
+        HiddenVanilla.Clear();
         ButtonCosts.Clear();
+        p1Text = null;
+        p2Text = null;
+        built = false;
     }
 }
