@@ -232,14 +232,14 @@ public class Main : BloonsTD6Mod
         var me = inGame.bridge.GetInputId();
         var them = Opponent(me);
 
-        if (p1Text != null) p1Text.text = Readout(me, me);
-        if (p2Text != null) p2Text.text = Readout(them, me);
+        if (p1Text is not null) p1Text.text = Readout(me, me);
+        if (p2Text is not null) p2Text.text = Readout(them, me);
 
         // The cloned buttons keep their own interactable logic, which is written for
         // sandbox and would grey them out here.
         foreach (var spawnButton in SpawnButtons)
         {
-            if (spawnButton?.Button != null) spawnButton.Button.interactable = true;
+            if (spawnButton is not null && spawnButton.Button is not null) spawnButton.Button.interactable = true;
         }
 
         var cash = Sim?.GetCashManager(me)?.cash?.Value ?? 0;
@@ -307,9 +307,17 @@ public class Main : BloonsTD6Mod
             ModHelper.Msg<Main>("[vs] powers menu was hidden, switched on for the send panel");
         }
 
-        BuildSends(grid.transform);
-        BuildLives(health);
-        built = true;
+        try
+        {
+            BuildSends(grid.transform);
+            BuildLives(health);
+            built = true;
+        }
+        catch (Exception e)
+        {
+            built = true;
+            ModHelper.Error<Main>($"[vs] building the panel failed: {e}");
+        }
     }
 
     private static void BuildSends(Transform grid)
@@ -325,7 +333,10 @@ public class Main : BloonsTD6Mod
 
         var model = InGame.instance.bridge?.Model ?? Game.instance.model;
         var bloonMenu = FindAnywhere<BloonMenu>();
-        var prefab = bloonMenu?.spawnBloonButtonPrefab;
+        var prefab = bloonMenu is null ? null : bloonMenu.spawnBloonButtonPrefab;
+        if (prefab is null)
+            ModHelper.Warning<Main>($"[vs] no spawn bloon button prefab: bloon menu " +
+                                    $"{(bloonMenu is null ? "missing" : "found")}");
 
         ButtonCosts.Clear();
         SpawnButtons.Clear();
@@ -342,11 +353,11 @@ public class Main : BloonsTD6Mod
 
             // The game's own spawn-bloon button already carries that bloon's artwork and
             // loads it the way the game does, so clone one rather than hunting the sprite.
-            var spawnButton = prefab == null
+            var spawnButton = prefab is null
                 ? null
                 : UnityEngine.Object.Instantiate(prefab, cell.transform).GetComponent<SpawnBloonButton>();
 
-            if (spawnButton != null && bloon != null)
+            if (spawnButton is not null && bloon is not null)
             {
                 spawnButton.SetBloon(bloon, bloonMenu.bloonCount, bloonMenu.bloonRate, bloonMenu.roundDetails);
 
@@ -358,10 +369,18 @@ public class Main : BloonsTD6Mod
             }
             else
             {
+                ModHelper.Warning<Main>($"[vs] no game button for {send.Label}: prefab " +
+                                        $"{(prefab is null ? "missing" : "found")}, bloon model " +
+                                        $"{(bloon is null ? "missing" : "found")}");
+
                 var fallback = cell.AddButton(new Info($"SendBtn{i}", InfoPreset.Flex),
                     VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
-                if (bloon?.icon != null)
-                    fallback.AddImage(new Info($"SendIcon{i}", InfoPreset.FillParent), bloon.icon.GetGUID());
+
+                var icon = bloon is null ? null : bloon.icon;
+                var guid = icon is null ? null : icon.GetGUID();
+
+                if (!string.IsNullOrEmpty(guid))
+                    fallback.AddImage(new Info($"SendIcon{i}", InfoPreset.FillParent), guid);
                 else
                     fallback.AddText(new Info($"SendName{i}", InfoPreset.FillParent), send.Label, 24);
             }
@@ -396,10 +415,10 @@ public class Main : BloonsTD6Mod
         OurObjects.Add(clone);
 
         var display = clone.GetComponent<HealthDisplay>();
-        if (display != null) UnityEngine.Object.Destroy(display);
+        if (display is not null) UnityEngine.Object.Destroy(display);
 
         var rect = clone.GetComponent<RectTransform>();
-        if (rect != null) rect.anchoredPosition = rect.anchoredPosition + new Vector2(0, yOffset);
+        if (rect is not null) rect.anchoredPosition = rect.anchoredPosition + new Vector2(0, yOffset);
 
         return clone.GetComponentInChildren<NK_TextMeshProUGUI>();
     }
