@@ -362,6 +362,21 @@ public class Main : BloonsTD6Mod
         private static void Postfix(PowersMenu __instance) => FillWithSends(__instance);
     }
 
+    /// The powers list is Mask/Sorter inside the menu. The insta monkeys scroll has a grid
+    /// of its own, which is the one a naive search finds first, so match on the parent.
+    private static Transform FindPowersGrid(BasePowersMenu menu)
+    {
+        foreach (var candidate in menu.GetComponentsInChildren<GridLayoutGroup>(true))
+        {
+            if (candidate is null) continue;
+
+            var parent = candidate.transform.parent;
+            if (parent is not null && parent.name == "Mask") return candidate.transform;
+        }
+
+        return null;
+    }
+
     private static void FillWithSends(BasePowersMenu menu)
     {
         if (!VersusMode || menu is null) return;
@@ -372,7 +387,10 @@ public class Main : BloonsTD6Mod
             ButtonCosts.Clear();
 
             var model = InGame.instance?.bridge?.Model ?? Game.instance.model;
+            var grid = FindPowersGrid(menu);
             var withArt = 0;
+
+            if (grid is null) ModHelper.Warning<Main>("[vs] could not find the powers grid, sends will be off screen");
 
             for (var i = 0; i < SendType.All.Length; i++)
             {
@@ -381,6 +399,14 @@ public class Main : BloonsTD6Mod
 
                 var slot = menu.GetNextButton();
                 if (slot is null) break;
+
+                // The pool it comes from sits at 5000,5000 and is switched off; the game
+                // re-parents a button into the grid after building it, so this has to too.
+                if (grid is not null)
+                {
+                    slot.transform.SetParent(grid, false);
+                    slot.transform.localScale = Vector3.one;
+                }
 
                 slot.SetActive(true);
 
