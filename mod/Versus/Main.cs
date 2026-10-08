@@ -330,16 +330,36 @@ public class Main : BloonsTD6Mod
     /// The powers tab builds its own buttons and then hides and rebuilds them whenever it
     /// opens, so the only way to live in it is to be part of that build. The game lays each
     /// button out through GetNextButton; its insides are replaced with a bloon and a price.
+    // PowersMenu declares its own LoadPowers and RebuildPowers that shadow the base ones,
+    // so patching only the base built the buttons once and then let the real build wipe them.
     [HarmonyPatch(typeof(BasePowersMenu), nameof(BasePowersMenu.LoadPowers))]
-    private static class LoadPowersPatch
+    private static class BaseLoadPatch
     {
         private static void Postfix(BasePowersMenu __instance) => FillWithSends(__instance);
     }
 
     [HarmonyPatch(typeof(BasePowersMenu), nameof(BasePowersMenu.RebuildPowers))]
-    private static class RebuildPowersPatch
+    private static class BaseRebuildPatch
     {
         private static void Postfix(BasePowersMenu __instance) => FillWithSends(__instance);
+    }
+
+    [HarmonyPatch(typeof(PowersMenu), nameof(PowersMenu.LoadPowers))]
+    private static class LoadPatch
+    {
+        private static void Postfix(PowersMenu __instance) => FillWithSends(__instance);
+    }
+
+    [HarmonyPatch(typeof(PowersMenu), nameof(PowersMenu.RebuildPowers))]
+    private static class RebuildPatch
+    {
+        private static void Postfix(PowersMenu __instance) => FillWithSends(__instance);
+    }
+
+    [HarmonyPatch(typeof(PowersMenu), nameof(PowersMenu.ShowAll))]
+    private static class ShowAllPatch
+    {
+        private static void Postfix(PowersMenu __instance) => FillWithSends(__instance);
     }
 
     private static void FillWithSends(BasePowersMenu menu)
@@ -414,7 +434,7 @@ public class Main : BloonsTD6Mod
     private static void BuildLives(HealthDisplay health)
     {
         var column = hudObject.AddModHelperPanel(
-            new Info("VersusLives", 40, -LivesY, 420, 170, new Vector2(0, 1)), null,
+            new Info("VersusLives", 250, -LivesY, 420, 170, new Vector2(0, 1)), null,
             RectTransform.Axis.Vertical, 8);
 
         p1Text = BuildCounter(column, "You");
