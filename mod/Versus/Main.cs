@@ -11,7 +11,6 @@ using Il2CppAssets.Scripts.Simulation.Bloons;
 using Il2CppAssets.Scripts.Unity;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
-using Il2CppAssets.Scripts.Unity.UI_New.InGame.BloonMenu;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame.RightMenu.Powers;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame.Stats;
 using MelonLoader;
@@ -58,7 +57,7 @@ public class Main : BloonsTD6Mod
         displayName = "Show the send panel in game"
     };
 
-    private static readonly ModSettingInt PanelY = new(40)
+    private static readonly ModSettingInt PanelY = new(30)
     {
         displayName = "Send panel height above the bottom edge",
         min = 0,
@@ -66,7 +65,7 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
-    private static readonly ModSettingInt LivesY = new(240)
+    private static readonly ModSettingInt LivesY = new(230)
     {
         displayName = "Lives panel distance below the top edge",
         min = 0,
@@ -91,7 +90,6 @@ public class Main : BloonsTD6Mod
 
     private static readonly List<ModHelperText> ButtonCosts = new();
     private static GameObject hudObject;
-    private static readonly List<SpawnBloonButton> SpawnButtons = new();
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
@@ -250,13 +248,6 @@ public class Main : BloonsTD6Mod
         if (p1Text is not null) p1Text.text = Readout(me, me);
         if (p2Text is not null) p2Text.text = Readout(them, me);
 
-        // The cloned buttons keep their own interactable logic, which is written for
-        // sandbox and would grey them out here.
-        foreach (var spawnButton in SpawnButtons)
-        {
-            if (spawnButton is not null && spawnButton.Button is not null) spawnButton.Button.interactable = true;
-        }
-
         var cash = Sim?.GetCashManager(me)?.cash?.Value ?? 0;
         for (var i = 0; i < ButtonCosts.Count; i++)
         {
@@ -324,93 +315,65 @@ public class Main : BloonsTD6Mod
     private static void BuildSends()
     {
         var model = InGame.instance.bridge?.Model ?? Game.instance.model;
-        var bloonMenu = FindAnywhere<BloonMenu>();
-        var prefab = bloonMenu is null ? null : bloonMenu.spawnBloonButtonPrefab;
 
         ButtonCosts.Clear();
-        SpawnButtons.Clear();
 
         var bar = hudObject.AddModHelperPanel(
-            new Info("VersusSends", 0, PanelY, 1260, 170, new Vector2(0.5f, 0)),
-            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Horizontal, 6, 12);
+            new Info("VersusSends", 0, PanelY, 1280, 196, new Vector2(0.5f, 0)),
+            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Horizontal, 6, 14);
 
+        var withArt = 0;
         for (var i = 0; i < SendType.All.Length; i++)
         {
             var send = SendType.All[i];
             var index = i;
             var bloon = model is null ? null : model.GetBloon(send.Bloon);
+            var icon = bloon is null ? null : bloon.icon;
+            var guid = icon is null ? null : icon.GetGUID();
 
-            var cell = bar.AddPanel(new Info($"Send{i}", 118, 146), null, RectTransform.Axis.Vertical, 0);
+            var cell = bar.AddPanel(new Info($"Send{i}", 118, 168), null, RectTransform.Axis.Vertical, 0);
+            var button = cell.AddButton(new Info($"SendBtn{i}", 112, 112),
+                VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
 
-            var spawnButton = prefab is null
-                ? null
-                : UnityEngine.Object.Instantiate(prefab, cell.transform).GetComponent<SpawnBloonButton>();
-
-            if (spawnButton is not null && bloon is not null)
+            if (string.IsNullOrEmpty(guid))
             {
-                spawnButton.SetBloon(bloon, bloonMenu.bloonCount, bloonMenu.bloonRate, bloonMenu.roundDetails);
-
-                var rect = spawnButton.GetComponent<RectTransform>();
-                if (rect is not null) rect.sizeDelta = new Vector2(104, 104);
-
-                // Its own handler spawns locally, which would desync at once.
-                var button = spawnButton.Button;
-                button.onClick = new Button.ButtonClickedEvent();
-                button.onClick.AddListener(new Action(() => Send(index)));
-                SpawnButtons.Add(spawnButton);
+                button.AddText(new Info($"SendName{i}", 104, 60), send.Label, 22);
             }
             else
             {
-                ModHelper.Warning<Main>($"[vs] no game button for {send.Label}: prefab " +
-                                        $"{(prefab is null ? "missing" : "found")}, bloon model " +
-                                        $"{(bloon is null ? "missing" : "found")}");
-
-                var fallback = cell.AddButton(new Info($"SendBtn{i}", 104, 104),
-                    VanillaSprites.BlueInsertPanelRound, new Action(() => Send(index)));
-                fallback.AddText(new Info($"SendName{i}", 100, 50), send.Label, 22);
+                // The sandbox bloon menu only exists in sandbox, so its buttons are no use
+                // here; the bloon's own icon off its model is always there.
+                button.AddImage(new Info($"SendIcon{i}", 92), guid);
+                withArt++;
             }
 
-            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 118, 26), "", 24));
-            cell.AddText(new Info($"SendInfo{i}", 118, 20), $"x{send.Count}  +{send.Income}", 18);
+            ButtonCosts.Add(cell.AddText(new Info($"SendCost{i}", 118, 30), "", 24));
+            cell.AddText(new Info($"SendInfo{i}", 118, 22), $"x{send.Count}  +{send.Income}", 18);
         }
 
-        ModHelper.Msg<Main>($"[vs] send panel built, {SpawnButtons.Count} of {SendType.All.Length} " +
-                            "buttons using the game's own bloon art");
+        ModHelper.Msg<Main>($"[vs] send panel built, {withArt} of {SendType.All.Length} buttons " +
+                            "showing bloon art");
     }
 
-    /// Two copies of the real lives widget in the mod's own container, stacked, rather than
-    /// dropped into the top bar's horizontal layout where they would sit side by side.
+    /// Built rather than cloned: the real lives widget carries a heart sized and anchored
+    /// for the top bar, and copies of it hung off the edge of the screen.
     private static void BuildLives(HealthDisplay health)
     {
-        var group = health.transform.parent;
         var column = hudObject.AddModHelperPanel(
-            new Info("VersusLives", 150, -LivesY, 520, 320, new Vector2(0, 1)), null,
-            RectTransform.Axis.Vertical, 10);
+            new Info("VersusLives", 40, -LivesY, 420, 170, new Vector2(0, 1)), null,
+            RectTransform.Axis.Vertical, 8);
 
-        p1Text = CloneCounter(group.gameObject, column.transform, "VersusLivesP1");
-        p2Text = CloneCounter(group.gameObject, column.transform, "VersusLivesP2");
+        p1Text = BuildCounter(column, "You");
+        p2Text = BuildCounter(column, "Them");
     }
 
-    private static NK_TextMeshProUGUI CloneCounter(GameObject source, Transform parent, string name)
+    private static NK_TextMeshProUGUI BuildCounter(ModHelperPanel column, string name)
     {
-        var clone = UnityEngine.Object.Instantiate(source, parent);
-        clone.name = name;
-        clone.SetActive(true);
+        var row = column.AddPanel(new Info($"Versus{name}", 420, 76),
+            VanillaSprites.BlueInsertPanelRound, RectTransform.Axis.Horizontal, 8, 8);
 
-        foreach (var display in clone.GetComponentsInChildren<HealthDisplay>(true))
-        {
-            if (display is not null) UnityEngine.Object.Destroy(display);
-        }
-
-        var rect = clone.GetComponent<RectTransform>();
-        if (rect is not null)
-        {
-            rect.anchorMin = new Vector2(0, 1);
-            rect.anchorMax = new Vector2(0, 1);
-            rect.anchoredPosition = Vector2.zero;
-        }
-
-        return clone.GetComponentInChildren<NK_TextMeshProUGUI>();
+        row.AddImage(new Info($"Versus{name}Icon", 56), VanillaSprites.LivesIcon);
+        return row.AddText(new Info($"Versus{name}Text", 320, 56), "", 34).Text;
     }
 
     private static void Teardown()
@@ -418,7 +381,6 @@ public class Main : BloonsTD6Mod
         if (hudObject is not null) UnityEngine.Object.Destroy(hudObject);
         hudObject = null;
         ButtonCosts.Clear();
-        SpawnButtons.Clear();
         p1Text = null;
         p2Text = null;
         built = false;
