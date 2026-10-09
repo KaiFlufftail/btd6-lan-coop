@@ -98,6 +98,12 @@ public class Main : BloonsTD6Mod
         description = "Only means anything on a map with more than one lane."
     };
 
+    private static readonly ModSettingBool SwapLanes = new(false)
+    {
+        displayName = "Swap which lane belongs to which player",
+        description = "If sends are arriving at the wrong end, turn this on."
+    };
+
     private static readonly ModSettingInt LivesY = new(230)
     {
         displayName = "Lives panel distance below the top edge",
@@ -305,15 +311,54 @@ public class Main : BloonsTD6Mod
         }
     }
 
-    /// Player one defends the first lane the round uses and player two the last, so a send
-    /// aimed at someone enters at their end. One lane means both share it, as now.
+    /// Player one defends the round's first lane and player two its second, so a send aimed
+    /// at someone enters at their end. Which lane sits next to whose building zone is up to
+    /// the map, hence the swap setting. One lane means both share it, as before.
     private static PathSegment LaneFor(Spawner spawner, int round, int player)
     {
         var paths = spawner.GetSpawnPathsForRound(round);
         if (paths is null || paths.Length == 0) return null;
 
-        var path = player <= 1 ? paths[0] : paths[paths.Length - 1];
+        var first = player <= 1;
+        if (SwapLanes) first = !first;
+
+        var path = first || paths.Length < 2 ? paths[0] : paths[1];
         return path is null || path.segments is null || path.segments.Length == 0 ? null : path.segments[0];
+    }
+
+    /// Says up front whether this map can actually hold a versus game, and where each
+    /// player is allowed to build, which is what decides whether their towers can even
+    /// reach the bloons being sent at them.
+    private static void ReportMapLayout()
+    {
+        var inGame = InGame.instance;
+        var spawner = inGame?.bridge?.Simulation?.Map?.spawner;
+        if (spawner is null) return;
+
+        var round = inGame.bridge.GetCurrentRound();
+        var paths = spawner.GetSpawnPathsForRound(round);
+        var lanes = paths is null ? 0 : paths.Length;
+
+        ModHelper.Msg<Main>(lanes >= 2
+            ? $"[vs] this map runs {lanes} lanes, so sends can arrive at the target's end"
+            : "[vs] this map runs a single lane, so both players defend the same track and " +
+              "sends arrive the usual way");
+
+        var simulation = Sim;
+        for (var player = 1; player <= 4; player++)
+        {
+            if (simulation is null || !simulation.InputManagerExists(player)) continue;
+
+            var input = simulation.GetInputManager(player);
+            if (input?.validCoopAreas is null) continue;
+
+            var areas = new System.Text.StringBuilder();
+            foreach (var area in input.validCoopAreas) areas.Append(area).Append(' ');
+
+            ModHelper.Msg<Main>(areas.Length == 0
+                ? $"[vs] player {player} may build anywhere, so both sides share the map"
+                : $"[vs] player {player} may build in areas: {areas}");
+        }
     }
 
     private static int CostOf(SendType send) => (int) Math.Round(send.Cost * (double) PriceScale);
