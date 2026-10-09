@@ -164,6 +164,12 @@ public class Main : BloonsTD6Mod
     private const TowerSet TeamOne = (TowerSet) 128;
     private const TowerSet TeamTwo = (TowerSet) 256;
 
+    /// Primary, Military, Magic, Support, Hero, Paragon and Items together. A bloon has to
+    /// be immune to everything a tower belongs to, so an immunity of only the team mark
+    /// left towers free to pop it: their set also carried Primary, which the mark did not
+    /// cover. The mark a side does not carry is what keeps the other side dangerous.
+    private const TowerSet EverySet = (TowerSet) 127;
+
     private static GameObject hudObject;
     private static CanvasGroup hiddenLives;
 
@@ -456,13 +462,16 @@ public class Main : BloonsTD6Mod
                         // Immune to its own sender's towers, so only the other side can pop it.
                         if (TeamImmunity)
                         {
-                            var mark = release.Sender <= 1 ? TeamOne : TeamTwo;
-                            bloon.ApplyTowerSetImmunity(mark);
+                            var mine = release.Sender <= 1 ? TeamOne : TeamTwo;
+                            var immunity = EverySet | mine;
+                            bloon.ApplyTowerSetImmunity(immunity);
 
                             if (release.Remaining == 1)
                             {
-                                Diagnostics.Say($"sent bloons of player {release.Sender} are immune to " +
-                                                $"team mark {(int) mark}, reported as {(int) bloon.TowerSetImmunity}");
+                                Diagnostics.Say($"sent bloons of player {release.Sender} made immune to " +
+                                                $"{(int) immunity}, which covers their own towers but not " +
+                                                $"team {(release.Sender <= 1 ? 2 : 1)}'s mark; bloon reports " +
+                                                $"{(int) bloon.TowerSetImmunity}");
                             }
                         }
                     }
