@@ -83,13 +83,13 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
-    private static readonly ModSettingInt SpacingUnits = new(200)
+    private static readonly ModSettingInt SpacingTicks = new(12)
     {
-        displayName = "Gap between sent bloons",
-        description = "Distance along the track between one sent bloon and the next. A bloon " +
-                      "is roughly 40 across, so small numbers still look like a clump.",
-        min = 0,
-        max = 500,
+        displayName = "Gap between sent bloons, in simulation ticks",
+        description = "The simulation runs sixty ticks a second, so twelve is a fifth of a " +
+                      "second between one bloon and the next.",
+        min = 1,
+        max = 300,
         slider = false
     };
 
@@ -121,6 +121,20 @@ public class Main : BloonsTD6Mod
     private static readonly Dictionary<IntPtr, int> SentBloonOwner = new();
     private static readonly List<ModHelperText> ButtonCosts = new();
     private static GameObject hudObject;
+
+    /// Sends are released one bloon at a time by the simulation's own clock. Doing it by
+    /// frame would drift between machines; the spawner's tick does not.
+    private sealed class Release(int sender, BloonModel bloon, PathSegment lane, int remaining, int nextTick)
+    {
+        public int Sender { get; } = sender;
+        public BloonModel Bloon { get; } = bloon;
+        public PathSegment Lane { get; } = lane;
+        public int Remaining { get; set; } = remaining;
+        public int NextTick { get; set; } = nextTick;
+    }
+
+    private static readonly List<Release> Releases = new();
+    private static int simTick;
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
@@ -239,10 +253,9 @@ public class Main : BloonsTD6Mod
                             $"{cost} for {send.Count} {send.Label}, income now {IncomeOf(sender)}");
     }
 
-    /// Emits the batch one bloon at a time, each a little further along the track than
-    /// the last, which is what makes ten reds a line of ten rather than one bloon carrying
-    /// nine passengers. Handing a list of emissions to the spawner's queue instead lets it
-    /// renumber and retime them, which is what went wrong before.
+    /// Queues the batch. Nothing is emitted here: the bloons go out one per tick interval
+    /// from the spawner's own clock, which is the only way to space them that both machines
+    /// agree on, and the only thing that visibly strings a send out.
     private static void SpawnSpaced(int sender, SendType send, int round)
     {
         var bridge = InGame.instance.bridge;
@@ -258,96 +271,74 @@ public class Main : BloonsTD6Mod
             return;
         }
 
-        var paths = spawner.GetSpawnPathsForRound(round);
-        var laneCount = paths is null ? 0 : paths.Length;
-        var laneIndex = LaneIndexFor(sender, laneCount);
-        var lane = OppositeSides ? LaneAt(paths, laneIndex) : null;
-        var gap = (float) (int) SpacingUnits;
-        var emitted = 0;
+        var lane = OppositeSides ? LaneFor(sender) : null;
+        Releases.Add(new Release(sender, bloonModel, lane, send.Count, simTick + 1));
 
-        for (var i = 0; i < send.Count; i++)
+        ModHelper.Msg<Main>($"[vs] queued {send.Count} {send.Label} for player {sender}, " +
+                            $"one every {(int) SpacingTicks} ticks, lane " +
+                            $"{(lane is null ? "default" : "redirected")}");
+    }
+
+    /// Runs once per simulation tick on every machine, so releasing from here keeps the
+    /// two games in step.
+    [HarmonyPatch(typeof(Spawner), nameof(Spawner.Process))]
+    private static class ProcessPatch
+    {
+        private static void Postfix(Spawner __instance)
         {
-            // Only applies to the bloon emitted right after it is set, hence every time.
-            if (lane is not null) spawner.spawnOverrideThisFrame = lane;
+            simTick++;
+            if (Releases.Count == 0) return;
 
-            var bloon = spawner.Emit(bloonModel, round, VersusEmissionBase + sender * PerPlayerBlock + i,
-                i * gap, false);
+            try
+            {
+                for (var i = Releases.Count - 1; i >= 0; i--)
+                {
+                    var release = Releases[i];
+                    if (simTick < release.NextTick) continue;
 
-            if (bloon is null) continue;
+                    if (release.Lane is not null) __instance.spawnOverrideThisFrame = release.Lane;
 
-            // Attribution straight off the bloon just made, rather than guessing which of
-            // the next arrivals belong to this send.
-            SentBloonOwner[bloon.Pointer] = sender;
-            emitted++;
-        }
+                    var bloon = __instance.Emit(release.Bloon, __instance.CurrentRound,
+                        VersusEmissionBase + release.Sender * PerPlayerBlock + release.Remaining, 0, false);
 
-        spawner.spawnOverrideThisFrame = null;
+                    if (bloon is not null) SentBloonOwner[bloon.Pointer] = release.Sender;
 
-        ModHelper.Msg<Main>($"[vs] emitted {emitted} {send.Label} for player {sender}, {gap:0} apart, " +
-                            $"map has {laneCount} lane(s), aimed at lane {laneIndex}, " +
-                            $"override {(lane is null ? "not set" : "set")}");
-
-        if (laneCount < 2 && OppositeSides)
-        {
-            ModHelper.Warning<Main>("[vs] this map runs one lane, so sends cannot come from the " +
-                                    "other end here; try a map with two, such as Encrypted or Quiet Street");
+                    release.Remaining--;
+                    release.NextTick = simTick + (int) SpacingTicks;
+                    if (release.Remaining <= 0) Releases.RemoveAt(i);
+                }
+            }
+            catch (Exception e)
+            {
+                Releases.Clear();
+                ModHelper.Error<Main>($"[vs] releasing a send failed: {e}");
+            }
         }
     }
 
-    /// A send aimed at someone enters at their end, so the lane is picked for the target,
-    /// not the sender. Which lane sits beside whose building zone is up to the map, hence
-    /// the swap setting.
-    private static int LaneIndexFor(int sender, int laneCount)
+    /// Every lane the map has, not just the one this round happens to use, which is what
+    /// GetSpawnPathsForRound reports and why two sided maps looked single laned.
+    private static PathSegment LaneFor(int sender)
     {
-        if (laneCount < 2) return 0;
+        var paths = InGame.instance?.bridge?.Simulation?.Map?.pathManager?.paths;
+        if (paths is null || paths.Count == 0) return null;
+
+        var usable = new List<Path>();
+        foreach (var path in paths)
+        {
+            if (path is null || path.segments is null || path.segments.Length == 0) continue;
+            if (path.isHidden) continue;
+            usable.Add(path);
+        }
+
+        if (usable.Count == 0) return null;
 
         var target = Opponent(sender);
         var first = target <= 1;
         if (SwapLanes) first = !first;
-        return first ? 0 : 1;
-    }
 
-    private static PathSegment LaneAt(Il2CppReferenceArray<Path> paths, int index)
-    {
-        if (paths is null || index >= paths.Length) return null;
-
-        var path = paths[index];
-        return path is null || path.segments is null || path.segments.Length == 0 ? null : path.segments[0];
-    }
-
-    /// Says up front whether this map can actually hold a versus game, and where each
-    /// player is allowed to build, which is what decides whether their towers can even
-    /// reach the bloons being sent at them.
-    private static void ReportMapLayout()
-    {
-        var inGame = InGame.instance;
-        var spawner = inGame?.bridge?.Simulation?.Map?.spawner;
-        if (spawner is null) return;
-
-        var round = inGame.bridge.GetCurrentRound();
-        var paths = spawner.GetSpawnPathsForRound(round);
-        var lanes = paths is null ? 0 : paths.Length;
-
-        ModHelper.Msg<Main>(lanes >= 2
-            ? $"[vs] this map runs {lanes} lanes, so sends can arrive at the target's end"
-            : "[vs] this map runs a single lane, so both players defend the same track and " +
-              "sends arrive the usual way");
-
-        var simulation = Sim;
-        for (var player = 1; player <= 4; player++)
-        {
-            if (simulation is null || !simulation.InputManagerExists(player)) continue;
-
-            var input = simulation.GetInputManager(player);
-            if (input?.validCoopAreas is null) continue;
-
-            var areas = new System.Text.StringBuilder();
-            foreach (var area in input.validCoopAreas) areas.Append(area).Append(' ');
-
-            ModHelper.Msg<Main>(areas.Length == 0
-                ? $"[vs] player {player} may build anywhere, so both sides share the map"
-                : $"[vs] player {player} may build in areas: {areas}");
-        }
+        var path2 = usable.Count < 2 ? usable[0] : usable[first ? 0 : 1];
+        return path2.segments[0];
     }
 
     private static int CostOf(SendType send) => (int) Math.Round(send.Cost * (double) PriceScale);
