@@ -83,10 +83,11 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
-    private static readonly ModSettingInt SpacingUnits = new(45)
+    private static readonly ModSettingInt SpacingUnits = new(200)
     {
         displayName = "Gap between sent bloons",
-        description = "Distance along the track between one sent bloon and the next.",
+        description = "Distance along the track between one sent bloon and the next. A bloon " +
+                      "is roughly 40 across, so small numbers still look like a clump.",
         min = 0,
         max = 500,
         slider = false
@@ -257,7 +258,10 @@ public class Main : BloonsTD6Mod
             return;
         }
 
-        var lane = OppositeSides ? LaneFor(spawner, round, Opponent(sender)) : null;
+        var paths = spawner.GetSpawnPathsForRound(round);
+        var laneCount = paths is null ? 0 : paths.Length;
+        var laneIndex = LaneIndexFor(sender, laneCount);
+        var lane = OppositeSides ? LaneAt(paths, laneIndex) : null;
         var gap = (float) (int) SpacingUnits;
         var emitted = 0;
 
@@ -279,22 +283,35 @@ public class Main : BloonsTD6Mod
 
         spawner.spawnOverrideThisFrame = null;
 
-        ModHelper.Msg<Main>($"[vs] emitted {emitted} {send.Label} for player {sender}, " +
-                            $"{gap:0} apart, lane {(lane is null ? "default" : "redirected")}");
+        ModHelper.Msg<Main>($"[vs] emitted {emitted} {send.Label} for player {sender}, {gap:0} apart, " +
+                            $"map has {laneCount} lane(s), aimed at lane {laneIndex}, " +
+                            $"override {(lane is null ? "not set" : "set")}");
+
+        if (laneCount < 2 && OppositeSides)
+        {
+            ModHelper.Warning<Main>("[vs] this map runs one lane, so sends cannot come from the " +
+                                    "other end here; try a map with two, such as Encrypted or Quiet Street");
+        }
     }
 
-    /// Player one defends the round's first lane and player two its second, so a send aimed
-    /// at someone enters at their end. Which lane sits next to whose building zone is up to
-    /// the map, hence the swap setting. One lane means both share it, as before.
-    private static PathSegment LaneFor(Spawner spawner, int round, int player)
+    /// A send aimed at someone enters at their end, so the lane is picked for the target,
+    /// not the sender. Which lane sits beside whose building zone is up to the map, hence
+    /// the swap setting.
+    private static int LaneIndexFor(int sender, int laneCount)
     {
-        var paths = spawner.GetSpawnPathsForRound(round);
-        if (paths is null || paths.Length == 0) return null;
+        if (laneCount < 2) return 0;
 
-        var first = player <= 1;
+        var target = Opponent(sender);
+        var first = target <= 1;
         if (SwapLanes) first = !first;
+        return first ? 0 : 1;
+    }
 
-        var path = first || paths.Length < 2 ? paths[0] : paths[1];
+    private static PathSegment LaneAt(Il2CppReferenceArray<Path> paths, int index)
+    {
+        if (paths is null || index >= paths.Length) return null;
+
+        var path = paths[index];
         return path is null || path.segments is null || path.segments.Length == 0 ? null : path.segments[0];
     }
 

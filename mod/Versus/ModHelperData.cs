@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.12.0";
+    public const string Version = "0.12.1";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
