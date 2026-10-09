@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.16.1";
+    public const string Version = "0.17.0";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
@@ -26,9 +26,7 @@ public static class ModHelperData
         "nothing else; one setting puts them back.<br><br>" +
         "A batch arrives strung out rather than stacked, and on a map with more than one lane it " +
         "enters from the other player's end. Both are settings.<br><br>" +
-        "Towers can be made to ignore the bloons their own side sent, so each player fights " +
-        "only what was aimed at them. That one is experimental and starts switched off." +
-        "<br><br>" +
+        
         "A sent bloon that leaks costs the player it was aimed at, and a side on zero loses. " +
         "Still missing: separate tracks. A bloon that splits only counts for its own layer. " +
         "Every machine must run this build.<br><br>" +

@@ -109,13 +109,6 @@ public class Main : BloonsTD6Mod
         description = "Only means anything on a map with more than one lane."
     };
 
-    private static readonly ModSettingBool OwnBloonsOnly = new(false)
-    {
-        displayName = "Towers ignore the bloons their own side sent",
-        description = "Experimental, and off until it has proved itself: this runs inside " +
-                      "the simulation, where a bad patch stalls the match rather than failing."
-    };
-
     private static readonly ModSettingBool SwapLanes = new(false)
     {
         displayName = "Swap which lane belongs to which player",
@@ -153,9 +146,7 @@ public class Main : BloonsTD6Mod
 
     private static readonly List<Release> Releases = new();
     private static int simTick;
-    private static bool targetingDisabled;
-    private static bool clearing;
-    private static int targetClears;
+
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
@@ -164,7 +155,7 @@ public class Main : BloonsTD6Mod
     public override void OnApplicationStart()
     {
         Diagnostics.Begin(ModHelperData.Version);
-        Diagnostics.Say($"settings: versus {(bool) VersusMode}, own bloons only {(bool) OwnBloonsOnly}, " +
+        Diagnostics.Say($"settings: versus {(bool) VersusMode}, " +
                         $"opposite sides {(bool) OppositeSides}, swap lanes {(bool) SwapLanes}, " +
                         $"no farms or heroes {(bool) BanFarmsAndHeroes}, gap {(int) SpacingTicks} ticks, " +
                         $"income every {(int) IncomeSeconds}s, price scale {(double) PriceScale}");
@@ -179,37 +170,6 @@ public class Main : BloonsTD6Mod
         Diagnostics.CheckPatch(typeof(Spawner), nameof(Spawner.Emit));
         Diagnostics.CheckPatch(typeof(UnityToSimulation.SendEmoteAction),
             nameof(UnityToSimulation.SendEmoteAction.Run));
-        AttachTargeting();
-    }
-
-    /// Attached by hand rather than by attribute, because an attribute patch goes on
-    /// whether the feature is wanted or not, and simply having a patch on this method is
-    /// enough to stall a match: it is called constantly by the simulation. Switching the
-    /// setting therefore takes a restart, which is a fair price for the game loading.
-    private void AttachTargeting()
-    {
-        if (!OwnBloonsOnly)
-        {
-            Diagnostics.Say("own-bloon targeting is off, so nothing is patched onto the attack code");
-            return;
-        }
-
-        Diagnostics.Guard("attaching own-bloon targeting", () =>
-        {
-            var target = AccessTools.Method(
-                typeof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack),
-                nameof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack.FindTarget));
-
-            if (target is null)
-            {
-                Diagnostics.Warn("could not find Attack.FindTarget, own-bloon targeting stays off");
-                return;
-            }
-
-            HarmonyInstance.Patch(target,
-                postfix: new HarmonyMethod(AccessTools.Method(typeof(TargetPatch), nameof(TargetPatch.Postfix))));
-            Diagnostics.Say("own-bloon targeting attached to Attack.FindTarget");
-        });
     }
 
     public override void OnMatchStart() => Diagnostics.Guard("starting a match", MatchStart);
@@ -234,12 +194,10 @@ public class Main : BloonsTD6Mod
     {
         if (SentBloonOwner.Count > 0)
         {
-            Diagnostics.Say($"round start: forgetting {SentBloonOwner.Count} tracked sent bloons" +
-                            (targetClears > 0 ? $", {targetClears} targets were redirected last round" : ""));
+            Diagnostics.Say($"round start: forgetting {SentBloonOwner.Count} tracked sent bloons");
         }
 
         SentBloonOwner.Clear();
-        targetClears = 0;
     }
 
     public override void PostBloonLeaked(Bloon bloon) =>
@@ -410,47 +368,6 @@ public class Main : BloonsTD6Mod
             {
                 Releases.Clear();
                 Diagnostics.Failed("releasing a send failed: ", e);
-            }
-        }
-    }
-
-    /// A tower should not shoot the bloons its own side paid to send.
-    ///
-    /// The obvious place, the target supplier's GetTarget, hands back a struct by ref, and
-    /// Il2Cpp's trampoline fails on a patched method with a by-ref struct before the patch
-    /// body ever runs, which hangs the match rather than erroring. So this watches the
-    /// attack after it has chosen, and clears a choice that belongs to the tower's own
-    /// side. FindTarget takes no arguments and returns nothing, so there is nothing to
-    /// marshal.
-    private static class TargetPatch
-    {
-        public static void Postfix(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack __instance)
-        {
-            if (targetingDisabled || !OwnBloonsOnly || SentBloonOwner.Count == 0 || clearing) return;
-
-            try
-            {
-                var bloon = __instance.target.bloon;
-                if (bloon is null) return;
-
-                if (!SentBloonOwner.TryGetValue(bloon.Pointer, out var sender)) return;
-
-                var tower = __instance.tower;
-                if (tower is null || tower.owner != sender) return;
-
-                // Clearing can send the attack looking again, so do not re-enter.
-                clearing = true;
-                __instance.ClearTarget(true);
-                targetClears++;
-            }
-            catch (Exception e)
-            {
-                targetingDisabled = true;
-                Diagnostics.Failed("own-bloon targeting switched off after an error: ", e);
-            }
-            finally
-            {
-                clearing = false;
             }
         }
     }
