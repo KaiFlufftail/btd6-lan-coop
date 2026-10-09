@@ -12,6 +12,8 @@ using Il2CppAssets.Scripts.Models.Bloons;
 using Il2CppAssets.Scripts.Models.Rounds;
 using Il2CppAssets.Scripts.Models.TowerSets;
 using Il2CppAssets.Scripts.Simulation.Input;
+using Il2CppAssets.Scripts.Simulation.Towers;
+using Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Behaviors;
 using Il2CppAssets.Scripts.Simulation.Track;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppAssets.Scripts.Unity;
@@ -108,6 +110,13 @@ public class Main : BloonsTD6Mod
         description = "Only means anything on a map with more than one lane."
     };
 
+    private static readonly ModSettingBool OwnBloonsOnly = new(true)
+    {
+        displayName = "Towers ignore the bloons their own side sent",
+        description = "A tower only shoots what was sent at its owner. Switched off if it " +
+                      "ever misbehaves, since this runs inside the simulation."
+    };
+
     private static readonly ModSettingBool SwapLanes = new(false)
     {
         displayName = "Swap which lane belongs to which player",
@@ -145,6 +154,7 @@ public class Main : BloonsTD6Mod
 
     private static readonly List<Release> Releases = new();
     private static int simTick;
+    private static bool targetingDisabled;
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
@@ -164,6 +174,11 @@ public class Main : BloonsTD6Mod
     public override void OnMatchEnd() => Teardown();
 
     public override void OnMainMenu() => Teardown();
+
+    /// Bloons are tracked by pointer and there is no hook for one being popped, so the
+    /// table is emptied each round. Left to grow it would both slow the targeting check
+    /// and risk crediting a new bloon that reused a dead one's address.
+    public override void OnRoundStart() => SentBloonOwner.Clear();
 
     public override void PostBloonLeaked(Bloon bloon)
     {
@@ -308,6 +323,37 @@ public class Main : BloonsTD6Mod
             {
                 Releases.Clear();
                 ModHelper.Error<Main>($"[vs] releasing a send failed: {e}");
+            }
+        }
+    }
+
+    /// A tower should not shoot the bloons its own side paid to send. Every targeting mode
+    /// ends up here, so this is the one place that can decide it, and it runs constantly:
+    /// hence the early exits, and a kill switch rather than a crash if anything goes wrong.
+    [HarmonyPatch(typeof(TargetSupplier), nameof(TargetSupplier.GetTarget))]
+    private static class TargetPatch
+    {
+        private static void Postfix(TargetSupplier __instance, ref Target __result)
+        {
+            if (targetingDisabled || !OwnBloonsOnly || SentBloonOwner.Count == 0) return;
+
+            try
+            {
+                var bloon = __result.bloon;
+                if (bloon is null) return;
+
+                if (!SentBloonOwner.TryGetValue(bloon.Pointer, out var sender)) return;
+
+                var tower = __instance.attack?.tower;
+                if (tower is null || tower.owner != sender) return;
+
+                // Sent by this tower's own side, so it is not theirs to pop.
+                __result = new Target();
+            }
+            catch (Exception e)
+            {
+                targetingDisabled = true;
+                ModHelper.Error<Main>($"[vs] own-bloon targeting switched off after an error: {e}");
             }
         }
     }
