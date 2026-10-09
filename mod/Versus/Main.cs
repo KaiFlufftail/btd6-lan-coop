@@ -115,10 +115,26 @@ public class Main : BloonsTD6Mod
     private static readonly ModSettingBool TeamImmunity = new(false)
     {
         displayName = "Your towers cannot pop the bloons you sent",
-        description = "Puts each player's towers in their own tower set and makes a sent " +
-                      "bloon immune to its sender's set. Towers still aim at them, they " +
-                      "just do no damage. Breaks buffs that key on the real sets, such as " +
-                      "Primary Training and village buffs."
+        description = "Adds a team mark to each player's towers and makes a sent bloon " +
+                      "immune to its sender's mark. Towers still aim at them, they just do " +
+                      "no damage."
+    };
+
+    private static readonly ModSettingBool NoNaturalRounds = new(true)
+    {
+        displayName = "No rounds of their own, only sent bloons",
+        description = "The match stops sending its own waves, so the only bloons on the " +
+                      "track are the ones the two of you paid for."
+    };
+
+    private static readonly ModSettingInt BaseIncome = new(50)
+    {
+        displayName = "Income everyone earns anyway",
+        description = "Paid on the same clock as send income. With the natural rounds off " +
+                      "there is no end of round cash, so this is what starts the economy.",
+        min = 0,
+        max = 100000,
+        slider = false
     };
 
     private static readonly ModSettingBool SwapLanes = new(false)
@@ -203,6 +219,23 @@ public class Main : BloonsTD6Mod
         Lives.Clear();
         Income.Clear();
         SentBloonOwner.Clear();
+        StopNaturalRound();
+    }
+
+    /// Versus is about the bloons the players buy, so the round's own wave is called off
+    /// as it begins. Sent bloons are emitted directly and are not affected.
+    private static void StopNaturalRound()
+    {
+        if (!VersusMode || !NoNaturalRounds) return;
+
+        Diagnostics.Guard("calling off the round's own bloons", () =>
+        {
+            var spawner = InGame.instance?.bridge?.Simulation?.Map?.spawner;
+            if (spawner is null) return;
+
+            spawner.CeaseAllEmissions();
+            Diagnostics.Say("the round's own bloons were called off");
+        });
     }
 
     public override void OnMatchEnd() => Teardown();
@@ -228,11 +261,14 @@ public class Main : BloonsTD6Mod
             if (model is null) return;
 
             var team = tower.owner <= 1 ? TeamOne : TeamTwo;
-            if (model.towerSet == team) return;
+            if ((model.towerSet & team) != 0) return;
 
-            model.towerSet = team;
-            Diagnostics.Say($"tower {model.baseId} of player {tower.owner} tagged as team " +
-                            $"{(team == TeamOne ? 1 : 2)}");
+            // Added to the real set, not instead of it. Replacing it left towers unable to
+            // hurt anything, because the game's own damage checks expect a known set, and
+            // it also broke every buff that keys on Primary, Military and the rest.
+            model.towerSet = (model.towerSet & ~(TeamOne | TeamTwo)) | team;
+            Diagnostics.Say($"tower {model.baseId} of player {tower.owner} joined team " +
+                            $"{(team == TeamOne ? 1 : 2)}, set is now {model.towerSet}");
         });
     }
 
@@ -244,6 +280,7 @@ public class Main : BloonsTD6Mod
         }
 
         SentBloonOwner.Clear();
+        StopNaturalRound();
     }
 
     public override void PostBloonLeaked(Bloon bloon) =>
@@ -451,27 +488,37 @@ public class Main : BloonsTD6Mod
         var simulation = Sim;
         if (simulation is null) return;
 
-        foreach (var entry in Income)
+        var players = new List<int>();
+        for (var player = 1; player <= 4; player++)
         {
-            if (entry.Value == 0) continue;
+            if (simulation.InputManagerExists(player)) players.Add(player);
+        }
 
-            if (entry.Value > 0)
+        if (players.Count == 0) players.Add(inGame.bridge.GetInputId());
+
+        foreach (var player in players)
+        {
+            var amount = IncomeOf(player) + (int) BaseIncome;
+            if (amount == 0) continue;
+
+            if (amount > 0)
             {
-                simulation.AddCash(entry.Value, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
-                    entry.Key, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.EcoEarned, null, false);
-                Diagnostics.Say($"income: player {entry.Key} paid {entry.Value}, now on " +
-                                $"{(long) (simulation.GetCashManager(entry.Key)?.cash?.Value ?? 0)}");
+                simulation.AddCash(amount, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
+                    player, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.EcoEarned, null, false);
+                Diagnostics.Say($"income: player {player} paid {amount}, now on " +
+                                $"{(long) (simulation.GetCashManager(player)?.cash?.Value ?? 0)}");
                 continue;
             }
 
-            var wallet = simulation.GetCashManager(entry.Key)?.cash;
-            var take = Math.Min(-entry.Value, wallet is null ? 0 : wallet.Value);
-            if (take > 0)
+            var owed = simulation.GetCashManager(player)?.cash;
+            var due = Math.Min(-amount, owed is null ? 0 : owed.Value);
+            if (due > 0)
             {
-                simulation.RemoveCash(take, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
-                    entry.Key, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.Normal);
+                simulation.RemoveCash(due, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
+                    player, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.Normal);
             }
         }
+
     }
 
     /// Every lane the map has, not just the one this round happens to use, which is what
