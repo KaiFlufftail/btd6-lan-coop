@@ -9,7 +9,10 @@ using HarmonyLib;
 using Il2Cpp;
 using Il2CppAssets.Scripts.Simulation.Bloons;
 using Il2CppAssets.Scripts.Models.Bloons;
+using Il2CppAssets.Scripts.Models;
 using Il2CppAssets.Scripts.Models.Rounds;
+using Il2CppAssets.Scripts.Models.Towers;
+using Il2CppAssets.Scripts.Simulation.Objects;
 using Il2CppAssets.Scripts.Models.TowerSets;
 using Il2CppAssets.Scripts.Simulation.Input;
 using Il2CppAssets.Scripts.Simulation.Towers;
@@ -109,6 +112,15 @@ public class Main : BloonsTD6Mod
         description = "Only means anything on a map with more than one lane."
     };
 
+    private static readonly ModSettingBool TeamImmunity = new(false)
+    {
+        displayName = "Your towers cannot pop the bloons you sent",
+        description = "Puts each player's towers in their own tower set and makes a sent " +
+                      "bloon immune to its sender's set. Towers still aim at them, they " +
+                      "just do no damage. Breaks buffs that key on the real sets, such as " +
+                      "Primary Training and village buffs."
+    };
+
     private static readonly ModSettingBool SwapLanes = new(false)
     {
         displayName = "Swap which lane belongs to which player",
@@ -130,6 +142,12 @@ public class Main : BloonsTD6Mod
     private static readonly Dictionary<int, int> Income = new();
     private static readonly Dictionary<IntPtr, int> SentBloonOwner = new();
     private static readonly List<ModHelperText> ButtonCosts = new();
+    /// Flags above Items in the game's own TowerSet enum, which nothing else uses, so a
+    /// player's towers can be told apart from their opponent's by the one mechanism the
+    /// game already honours: a bloon being immune to a whole set.
+    private const TowerSet TeamOne = (TowerSet) 128;
+    private const TowerSet TeamTwo = (TowerSet) 256;
+
     private static GameObject hudObject;
     private static GameObject hiddenLives;
 
@@ -157,6 +175,7 @@ public class Main : BloonsTD6Mod
         Diagnostics.Begin(ModHelperData.Version);
         Diagnostics.Say($"settings: versus {(bool) VersusMode}, " +
                         $"opposite sides {(bool) OppositeSides}, swap lanes {(bool) SwapLanes}, " +
+                        $"team immunity {(bool) TeamImmunity}, " +
                         $"no farms or heroes {(bool) BanFarmsAndHeroes}, gap {(int) SpacingTicks} ticks, " +
                         $"income every {(int) IncomeSeconds}s, price scale {(double) PriceScale}");
 
@@ -190,6 +209,30 @@ public class Main : BloonsTD6Mod
     /// Bloons are tracked by pointer and there is no hook for one being popped, so the
     /// table is emptied each round. Left to grow it would both slow the targeting check
     /// and risk crediting a new bloon that reused a dead one's address.
+    public override void OnTowerCreated(Tower tower, Entity target, Model modelToUse) => Retag(tower);
+
+    public override void OnTowerUpgraded(Tower tower, string upgradeName, TowerModel newBaseTowerModel) =>
+        Retag(tower);
+
+    /// An upgrade swaps the tower's model, so the tag has to be put back each time.
+    private static void Retag(Tower tower)
+    {
+        if (!VersusMode || !TeamImmunity || tower is null) return;
+
+        Diagnostics.Guard("tagging a tower with its team", () =>
+        {
+            var model = tower.towerModel;
+            if (model is null) return;
+
+            var team = tower.owner <= 1 ? TeamOne : TeamTwo;
+            if (model.towerSet == team) return;
+
+            model.towerSet = team;
+            Diagnostics.Say($"tower {model.baseId} of player {tower.owner} tagged as team " +
+                            $"{(team == TeamOne ? 1 : 2)}");
+        });
+    }
+
     public override void OnRoundStart()
     {
         if (SentBloonOwner.Count > 0)
@@ -349,7 +392,16 @@ public class Main : BloonsTD6Mod
                     var bloon = __instance.Emit(release.Bloon, __instance.CurrentRound,
                         VersusEmissionBase + release.Sender * PerPlayerBlock + release.Remaining, 0, false);
 
-                    if (bloon is not null) SentBloonOwner[bloon.Pointer] = release.Sender;
+                    if (bloon is not null)
+                    {
+                        SentBloonOwner[bloon.Pointer] = release.Sender;
+
+                        // Immune to its own sender's towers, so only the other side can pop it.
+                        if (TeamImmunity)
+                        {
+                            bloon.ApplyTowerSetImmunity(release.Sender <= 1 ? TeamOne : TeamTwo);
+                        }
+                    }
 
                     if (bloon is null) Diagnostics.Warn($"the spawner returned nothing for player {release.Sender}");
 

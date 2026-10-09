@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.17.0";
+    public const string Version = "0.18.0";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
@@ -27,6 +27,10 @@ public static class ModHelperData
         "A batch arrives strung out rather than stacked, and on a map with more than one lane it " +
         "enters from the other player's end. Both are settings.<br><br>" +
         
+        "Optionally each player's towers go into their own tower set and a sent bloon is made " +
+        "immune to its sender's set, so you cannot pop what you paid to send. Towers still " +
+        "aim at them and simply do nothing, and buffs that key on the real sets stop " +
+        "working, so it starts switched off.<br><br>" +
         "A sent bloon that leaks costs the player it was aimed at, and a side on zero loses. " +
         "Still missing: separate tracks. A bloon that splits only counts for its own layer. " +
         "Every machine must run this build.<br><br>" +
