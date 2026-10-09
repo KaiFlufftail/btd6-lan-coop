@@ -179,8 +179,37 @@ public class Main : BloonsTD6Mod
         Diagnostics.CheckPatch(typeof(Spawner), nameof(Spawner.Emit));
         Diagnostics.CheckPatch(typeof(UnityToSimulation.SendEmoteAction),
             nameof(UnityToSimulation.SendEmoteAction.Run));
-        Diagnostics.CheckPatch(typeof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack),
-            nameof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack.FindTarget));
+        AttachTargeting();
+    }
+
+    /// Attached by hand rather than by attribute, because an attribute patch goes on
+    /// whether the feature is wanted or not, and simply having a patch on this method is
+    /// enough to stall a match: it is called constantly by the simulation. Switching the
+    /// setting therefore takes a restart, which is a fair price for the game loading.
+    private void AttachTargeting()
+    {
+        if (!OwnBloonsOnly)
+        {
+            Diagnostics.Say("own-bloon targeting is off, so nothing is patched onto the attack code");
+            return;
+        }
+
+        Diagnostics.Guard("attaching own-bloon targeting", () =>
+        {
+            var target = AccessTools.Method(
+                typeof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack),
+                nameof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack.FindTarget));
+
+            if (target is null)
+            {
+                Diagnostics.Warn("could not find Attack.FindTarget, own-bloon targeting stays off");
+                return;
+            }
+
+            HarmonyInstance.Patch(target,
+                postfix: new HarmonyMethod(AccessTools.Method(typeof(TargetPatch), nameof(TargetPatch.Postfix))));
+            Diagnostics.Say("own-bloon targeting attached to Attack.FindTarget");
+        });
     }
 
     public override void OnMatchStart() => Diagnostics.Guard("starting a match", MatchStart);
@@ -393,11 +422,9 @@ public class Main : BloonsTD6Mod
     /// attack after it has chosen, and clears a choice that belongs to the tower's own
     /// side. FindTarget takes no arguments and returns nothing, so there is nothing to
     /// marshal.
-    [HarmonyPatch(typeof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack),
-        nameof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack.FindTarget))]
     private static class TargetPatch
     {
-        private static void Postfix(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack __instance)
+        public static void Postfix(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack __instance)
         {
             if (targetingDisabled || !OwnBloonsOnly || SentBloonOwner.Count == 0 || clearing) return;
 
