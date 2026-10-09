@@ -127,6 +127,11 @@ public class Main : BloonsTD6Mod
                       "track are the ones the two of you paid for."
     };
 
+    private static readonly ModSettingHotkey ProbeKey = new(KeyCode.J, HotkeyModifier.Shift)
+    {
+        displayName = "Ask the game how bloon immunity actually works"
+    };
+
     private static readonly ModSettingInt BaseIncome = new(50)
     {
         displayName = "Income everyone earns anyway",
@@ -333,7 +338,59 @@ public class Main : BloonsTD6Mod
         Diagnostics.Say($"{banned.Count} towers disabled: farms and every hero");
     }
 
-    public override void OnUpdate() => Diagnostics.Guard("drawing the interface", UpdateUi);
+    public override void OnUpdate()
+    {
+        Diagnostics.Guard("drawing the interface", UpdateUi);
+        if (ProbeKey.JustPressed()) Diagnostics.Guard("probing immunity", ProbeImmunity);
+    }
+
+    /// Rather than guess at the rule again, ask the game: take a real tower and a real
+    /// bloon, try each candidate mask on the bloon, and call the game's own immunity check
+    /// with it. Whatever comes back true is the shape the rule wants.
+    private static void ProbeImmunity()
+    {
+        var inGame = InGame.instance;
+        if (inGame is null || !inGame.IsInGame())
+        {
+            Diagnostics.Warn("probe needs to be in a match");
+            return;
+        }
+
+        var towers = inGame.GetTowers();
+        var bloons = inGame.GetBloons();
+
+        if (towers is null || towers.Count == 0 || bloons is null || bloons.Count == 0)
+        {
+            Diagnostics.Warn($"probe needs a tower and a bloon on screen: {towers?.Count ?? 0} towers, " +
+                             $"{bloons?.Count ?? 0} bloons");
+            return;
+        }
+
+        var tower = towers[0];
+        var bloon = bloons[0];
+        var towerSet = tower.towerModel is null ? (TowerSet) 0 : tower.towerModel.towerSet;
+        var was = bloon.TowerSetImmunity;
+
+        Diagnostics.Say($"probe: tower {tower.towerModel?.baseId} set {(int) towerSet}, " +
+                        $"bloon {bloon.bloonModel?.id}, immunity was {(int) was}");
+
+        foreach (var candidate in new[] { 0, 1, 15, 127, 128, 129, 255, 256, 257, 383, (int) towerSet, -1 })
+        {
+            try
+            {
+                bloon.ApplyTowerSetImmunity((TowerSet) candidate);
+                var immune = bloon.IsImmuneByTowerSet(null, tower);
+                Diagnostics.Say($"probe: immunity {candidate} -> immune {immune}");
+            }
+            catch (Exception e)
+            {
+                Diagnostics.Say($"probe: immunity {candidate} -> threw {e.GetType().Name}");
+            }
+        }
+
+        bloon.ApplyTowerSetImmunity(was);
+        Diagnostics.Say("probe finished, original immunity restored");
+    }
 
     private static void Send(int index)
     {
