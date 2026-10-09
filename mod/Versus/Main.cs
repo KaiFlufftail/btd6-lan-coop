@@ -245,31 +245,37 @@ public class Main : BloonsTD6Mod
     /// Bloons are tracked by pointer and there is no hook for one being popped, so the
     /// table is emptied each round. Left to grow it would both slow the targeting check
     /// and risk crediting a new bloon that reused a dead one's address.
-    public override void OnTowerCreated(Tower tower, Entity target, Model modelToUse) => Retag(tower);
-
-    public override void OnTowerUpgraded(Tower tower, string upgradeName, TowerModel newBaseTowerModel) =>
-        Retag(tower);
-
-    /// An upgrade swaps the tower's model, so the tag has to be put back each time.
-    private static void Retag(Tower tower)
+    /// Marking a tower as it is created does not work: its owner is not settled yet and
+    /// reads back as a placeholder, which put every tower on the same team. The towers are
+    /// swept instead, from the simulation's own tick so both machines do it together, and
+    /// an upgrade that swaps a tower's model is picked up by the next sweep.
+    private static void SweepTowerTeams()
     {
-        if (!VersusMode || !TeamImmunity || tower is null) return;
+        if (!VersusMode || !TeamImmunity) return;
+        if (simTick % 30 != 0) return;
 
-        Diagnostics.Guard("tagging a tower with its team", () =>
+        var inGame = InGame.instance;
+        if (inGame is null || inGame.bridge is null || !inGame.IsInGame()) return;
+
+        foreach (var tower in inGame.GetTowers())
         {
+            if (tower is null) continue;
+
             var model = tower.towerModel;
-            if (model is null) return;
+            if (model is null) continue;
 
-            var team = tower.owner <= 1 ? TeamOne : TeamTwo;
-            if ((model.towerSet & team) != 0) return;
+            var owner = tower.owner >= 1 ? tower.owner : tower.originalOwner;
+            if (owner < 1) continue;
 
-            // Added to the real set, not instead of it. Replacing it left towers unable to
-            // hurt anything, because the game's own damage checks expect a known set, and
-            // it also broke every buff that keys on Primary, Military and the rest.
+            var team = owner <= 1 ? TeamOne : TeamTwo;
+            if ((model.towerSet & team) != 0) continue;
+
+            // Added to the real set, not instead of it: the game's damage checks expect a
+            // known set, and the buffs that key on Primary and the rest must keep working.
             model.towerSet = (model.towerSet & ~(TeamOne | TeamTwo)) | team;
-            Diagnostics.Say($"tower {model.baseId} of player {tower.owner} joined team " +
+            Diagnostics.Say($"tower {model.baseId} of player {owner} joined team " +
                             $"{(team == TeamOne ? 1 : 2)}, set is now {model.towerSet}");
-        });
+        }
     }
 
     public override void OnRoundStart()
@@ -428,6 +434,8 @@ public class Main : BloonsTD6Mod
                 // if these keep coming, the tick is alive and the fault is elsewhere.
                 if (simTick % 600 == 0) Diagnostics.Say($"simulation tick {simTick}");
 
+                SweepTowerTeams();
+
                 PayIncome();
                 if (Releases.Count == 0) return;
 
@@ -448,7 +456,14 @@ public class Main : BloonsTD6Mod
                         // Immune to its own sender's towers, so only the other side can pop it.
                         if (TeamImmunity)
                         {
-                            bloon.ApplyTowerSetImmunity(release.Sender <= 1 ? TeamOne : TeamTwo);
+                            var mark = release.Sender <= 1 ? TeamOne : TeamTwo;
+                            bloon.ApplyTowerSetImmunity(mark);
+
+                            if (release.Remaining == 1)
+                            {
+                                Diagnostics.Say($"sent bloons of player {release.Sender} are immune to " +
+                                                $"team mark {(int) mark}, reported as {(int) bloon.TowerSetImmunity}");
+                            }
                         }
                     }
 
