@@ -83,6 +83,15 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
+    private static readonly ModSettingInt IncomeSeconds = new(6)
+    {
+        displayName = "Seconds between income payouts",
+        description = "Six, as in Battles. Income no longer waits for the end of a round.",
+        min = 1,
+        max = 120,
+        slider = false
+    };
+
     private static readonly ModSettingInt SpacingTicks = new(12)
     {
         displayName = "Gap between sent bloons, in simulation ticks",
@@ -121,6 +130,7 @@ public class Main : BloonsTD6Mod
     private static readonly Dictionary<IntPtr, int> SentBloonOwner = new();
     private static readonly List<ModHelperText> ButtonCosts = new();
     private static GameObject hudObject;
+    private static GameObject hiddenLives;
 
     /// Sends are released one bloon at a time by the simulation's own clock. Doing it by
     /// frame would drift between machines; the spawner's tick does not.
@@ -154,25 +164,6 @@ public class Main : BloonsTD6Mod
     public override void OnMatchEnd() => Teardown();
 
     public override void OnMainMenu() => Teardown();
-
-    /// Income arrives in a hook the simulation drives, so every client pays the same
-    /// players the same cash on the same tick.
-    public override void OnRoundStart()
-    {
-        var simulation = Sim;
-        if (simulation == null) return;
-
-        foreach (var entry in Income)
-        {
-            if (entry.Value <= 0) continue;
-
-            var wallet = simulation.GetCashManager(entry.Key)?.cash;
-            if (wallet == null) continue;
-
-            wallet.Value += entry.Value;
-            ModHelper.Msg<Main>($"[vs] player {entry.Key} earns {entry.Value}, now on {(long) wallet.Value}");
-        }
-    }
 
     public override void PostBloonLeaked(Bloon bloon)
     {
@@ -236,7 +227,8 @@ public class Main : BloonsTD6Mod
 
         var send = SendType.All[index];
         var cost = CostOf(send);
-        var wallet = Sim?.GetCashManager(sender)?.cash;
+        var simulation = Sim;
+        var wallet = simulation?.GetCashManager(sender)?.cash;
 
         if (wallet is null || wallet.Value < cost)
         {
@@ -244,7 +236,10 @@ public class Main : BloonsTD6Mod
             return;
         }
 
-        wallet.Value -= cost;
+        // Writing to the wallet directly moves the money but not the number on screen,
+        // which only redraws when the simulation announces the change.
+        simulation.RemoveCash(cost, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal, sender,
+            Il2CppAssets.Scripts.Simulation.Simulation.CashSource.Normal);
         Income[sender] = IncomeOf(sender) + send.Income;
         SpawnSpaced(sender, send, round);
 
@@ -287,6 +282,7 @@ public class Main : BloonsTD6Mod
         private static void Postfix(Spawner __instance)
         {
             simTick++;
+            PayIncome();
             if (Releases.Count == 0) return;
 
             try
@@ -312,6 +308,37 @@ public class Main : BloonsTD6Mod
             {
                 Releases.Clear();
                 ModHelper.Error<Main>($"[vs] releasing a send failed: {e}");
+            }
+        }
+    }
+
+    /// Battles pays out every six seconds rather than at the end of a round, and the
+    /// simulation's tick is the clock both machines share.
+    private static void PayIncome()
+    {
+        var interval = (int) IncomeSeconds * 60;
+        if (interval <= 0 || simTick % interval != 0 || Income.Count == 0) return;
+
+        var simulation = Sim;
+        if (simulation is null) return;
+
+        foreach (var entry in Income)
+        {
+            if (entry.Value == 0) continue;
+
+            if (entry.Value > 0)
+            {
+                simulation.AddCash(entry.Value, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
+                    entry.Key, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.EcoEarned, null, false);
+                continue;
+            }
+
+            var wallet = simulation.GetCashManager(entry.Key)?.cash;
+            var take = Math.Min(-entry.Value, wallet is null ? 0 : wallet.Value);
+            if (take > 0)
+            {
+                simulation.RemoveCash(take, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
+                    entry.Key, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.Normal);
             }
         }
     }
@@ -617,6 +644,14 @@ public class Main : BloonsTD6Mod
 
         p1Text = BuildCounter(column, "You", backing);
         p2Text = BuildCounter(column, "Them", backing);
+
+        // The round's own lives pool means nothing in versus, so it goes.
+        var vanilla = health.transform.parent;
+        if (vanilla is not null)
+        {
+            vanilla.gameObject.SetActive(false);
+            hiddenLives = vanilla.gameObject;
+        }
     }
 
     private static NK_TextMeshProUGUI BuildCounter(ModHelperPanel column, string name, Sprite backing)
@@ -638,7 +673,9 @@ public class Main : BloonsTD6Mod
     private static void Teardown()
     {
         if (hudObject is not null) UnityEngine.Object.Destroy(hudObject);
+        if (hiddenLives is not null) hiddenLives.SetActive(true);
         hudObject = null;
+        hiddenLives = null;
         ButtonCosts.Clear();
         p1Text = null;
         p2Text = null;
