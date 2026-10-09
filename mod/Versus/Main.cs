@@ -83,12 +83,12 @@ public class Main : BloonsTD6Mod
         slider = false
     };
 
-    private static readonly ModSettingInt SpacingMs = new(350)
+    private static readonly ModSettingInt SpacingUnits = new(45)
     {
-        displayName = "Gap between sent bloons in milliseconds",
-        description = "How strung out a batch arrives. Zero puts them on top of each other.",
+        displayName = "Gap between sent bloons",
+        description = "Distance along the track between one sent bloon and the next.",
         min = 0,
-        max = 3000,
+        max = 500,
         slider = false
     };
 
@@ -118,15 +118,6 @@ public class Main : BloonsTD6Mod
     private static readonly Dictionary<int, int> Lives = new();
     private static readonly Dictionary<int, int> Income = new();
     private static readonly Dictionary<IntPtr, int> SentBloonOwner = new();
-    private static readonly List<PendingSend> Pending = new();
-
-    private sealed class PendingSend(int sender, string bloon, int remaining)
-    {
-        public int Sender { get; } = sender;
-        public string Bloon { get; } = bloon;
-        public int Remaining { get; set; } = remaining;
-    }
-
     private static readonly List<ModHelperText> ButtonCosts = new();
     private static GameObject hudObject;
 
@@ -143,7 +134,6 @@ public class Main : BloonsTD6Mod
         Lives.Clear();
         Income.Clear();
         SentBloonOwner.Clear();
-        Pending.Clear();
     }
 
     public override void OnMatchEnd() => Teardown();
@@ -166,23 +156,6 @@ public class Main : BloonsTD6Mod
 
             wallet.Value += entry.Value;
             ModHelper.Msg<Main>($"[vs] player {entry.Key} earns {entry.Value}, now on {(long) wallet.Value}");
-        }
-    }
-
-    public override void OnBloonCreated(Bloon bloon)
-    {
-        if (Pending.Count == 0) return;
-
-        var id = bloon.bloonModel?.id;
-        for (var i = 0; i < Pending.Count; i++)
-        {
-            var send = Pending[i];
-            if (send.Bloon != id) continue;
-
-            SentBloonOwner[bloon.Pointer] = send.Sender;
-            send.Remaining--;
-            if (send.Remaining <= 0) Pending.RemoveAt(i);
-            return;
         }
     }
 
@@ -259,56 +232,55 @@ public class Main : BloonsTD6Mod
         wallet.Value -= cost;
         Income[sender] = IncomeOf(sender) + send.Income;
         SpawnSpaced(sender, send, round);
-        Pending.Add(new PendingSend(sender, send.Bloon, send.Count));
 
         sendsSeen++;
         ModHelper.Msg<Main>($"[vs] send {sendsSeen} on round {round + 1}: player {sender} paid " +
                             $"{cost} for {send.Count} {send.Label}, income now {IncomeOf(sender)}");
     }
 
-    /// A batch has to arrive strung out, not as one bloon carrying nine friends. Emission
-    /// times are measured from the start of the round, so the first one goes just after
-    /// wherever the round has got to and the rest follow at the chosen gap.
+    /// Emits the batch one bloon at a time, each a little further along the track than
+    /// the last, which is what makes ten reds a line of ten rather than one bloon carrying
+    /// nine passengers. Handing a list of emissions to the spawner's queue instead lets it
+    /// renumber and retime them, which is what went wrong before.
     private static void SpawnSpaced(int sender, SendType send, int round)
     {
         var bridge = InGame.instance.bridge;
-        var elapsed = bridge.Simulation?.roundTime is null ? 0 : bridge.Simulation.roundTime.elapsed;
-        var baseTime = elapsed / 60f + 0.2f;
-        var gap = (int) SpacingMs / 1000f;
+        var spawner = bridge.Simulation?.Map?.spawner;
+        var model = bridge.Model ?? Game.instance.model;
+        var bloonModel = model is null ? null : model.GetBloon(send.Bloon);
 
-        var emissions = new Il2CppReferenceArray<BloonEmissionModel>(send.Count);
+        if (spawner is null || bloonModel is null)
+        {
+            ModHelper.Warning<Main>($"[vs] cannot emit {send.Label}: spawner " +
+                                    $"{(spawner is null ? "missing" : "found")}, model " +
+                                    $"{(bloonModel is null ? "missing" : "found")}");
+            return;
+        }
+
+        var lane = OppositeSides ? LaneFor(spawner, round, Opponent(sender)) : null;
+        var gap = (float) (int) SpacingUnits;
+        var emitted = 0;
+
         for (var i = 0; i < send.Count; i++)
         {
-            var emission = new BloonEmissionModel("VersusSend", baseTime + i * gap, send.Bloon, false, TowerSet.None);
-            emission.emissionIndex = VersusEmissionBase + sender * PerPlayerBlock + i;
-            emissions[i] = emission;
+            // Only applies to the bloon emitted right after it is set, hence every time.
+            if (lane is not null) spawner.spawnOverrideThisFrame = lane;
+
+            var bloon = spawner.Emit(bloonModel, round, VersusEmissionBase + sender * PerPlayerBlock + i,
+                i * gap, false);
+
+            if (bloon is null) continue;
+
+            // Attribution straight off the bloon just made, rather than guessing which of
+            // the next arrivals belong to this send.
+            SentBloonOwner[bloon.Pointer] = sender;
+            emitted++;
         }
 
-        bridge.SpawnBloons(emissions, round, 0);
-    }
+        spawner.spawnOverrideThisFrame = null;
 
-    /// The spawner emits one bloon at a time and takes the next spawn point from
-    /// spawnOverrideThisFrame, so a sent bloon gets pointed at its target's lane in the
-    /// moment before it appears. Kept trivial and caught: this runs inside the simulation,
-    /// where a throwing patch breaks the game rather than itself.
-    [HarmonyPatch(typeof(Spawner), nameof(Spawner.Emit))]
-    private static class EmitPatch
-    {
-        private static void Prefix(Spawner __instance, int roundNumber, int emissionIndex)
-        {
-            if (!OppositeSides || emissionIndex < VersusEmissionBase) return;
-
-            try
-            {
-                var sender = (emissionIndex - VersusEmissionBase) / PerPlayerBlock;
-                var lane = LaneFor(__instance, roundNumber, Opponent(sender));
-                if (lane is not null) __instance.spawnOverrideThisFrame = lane;
-            }
-            catch
-            {
-                // A send that comes down the usual lane is far better than a broken round.
-            }
-        }
+        ModHelper.Msg<Main>($"[vs] emitted {emitted} {send.Label} for player {sender}, " +
+                            $"{gap:0} apart, lane {(lane is null ? "default" : "redirected")}");
     }
 
     /// Player one defends the round's first lane and player two its second, so a send aimed
