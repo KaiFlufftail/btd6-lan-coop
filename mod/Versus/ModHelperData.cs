@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.15.1";
+    public const string Version = "0.16.0";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
@@ -31,7 +31,10 @@ public static class ModHelperData
         "<br><br>" +
         "A sent bloon that leaks costs the player it was aimed at, and a side on zero loses. " +
         "Still missing: separate tracks. A bloon that splits only counts for its own layer. " +
-        "Every machine must run this build.";
+        "Every machine must run this build.<br><br>" +
+        "Writes a full account of itself to VersusLog.txt in the game folder: which patches " +
+        "attached, what the map offers, every send and what it cost, every payout, every " +
+        "leak, and any failure with its context.";
 
     public const string RepoOwner = "KaiFlufftail";
     public const string RepoName = "btd6-lan-coop";

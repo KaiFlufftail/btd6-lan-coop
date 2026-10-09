@@ -155,14 +155,37 @@ public class Main : BloonsTD6Mod
     private static int simTick;
     private static bool targetingDisabled;
     private static bool clearing;
+    private static int targetClears;
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
     private static bool built;
 
-    public override void OnApplicationStart() => ModHelper.Msg<Main>("Versus loaded.");
+    public override void OnApplicationStart()
+    {
+        Diagnostics.Begin(ModHelperData.Version);
+        Diagnostics.Say($"settings: versus {(bool) VersusMode}, own bloons only {(bool) OwnBloonsOnly}, " +
+                        $"opposite sides {(bool) OppositeSides}, swap lanes {(bool) SwapLanes}, " +
+                        $"no farms or heroes {(bool) BanFarmsAndHeroes}, gap {(int) SpacingTicks} ticks, " +
+                        $"income every {(int) IncomeSeconds}s, price scale {(double) PriceScale}");
 
-    public override void OnMatchStart()
+        // Each of these is a place a silent failure has cost an evening before.
+        Diagnostics.CheckPatch(typeof(BasePowersMenu), nameof(BasePowersMenu.LoadPowers));
+        Diagnostics.CheckPatch(typeof(BasePowersMenu), nameof(BasePowersMenu.RebuildPowers));
+        Diagnostics.CheckPatch(typeof(PowersMenu), nameof(PowersMenu.LoadPowers));
+        Diagnostics.CheckPatch(typeof(PowersMenu), nameof(PowersMenu.RebuildPowers));
+        Diagnostics.CheckPatch(typeof(PowersMenu), nameof(PowersMenu.ShowAll));
+        Diagnostics.CheckPatch(typeof(Spawner), nameof(Spawner.Process));
+        Diagnostics.CheckPatch(typeof(Spawner), nameof(Spawner.Emit));
+        Diagnostics.CheckPatch(typeof(UnityToSimulation.SendEmoteAction),
+            nameof(UnityToSimulation.SendEmoteAction.Run));
+        Diagnostics.CheckPatch(typeof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack),
+            nameof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack.FindTarget));
+    }
+
+    public override void OnMatchStart() => Diagnostics.Guard("starting a match", MatchStart);
+
+    private void MatchStart()
     {
         sendsSeen = 0;
         loser = 0;
@@ -178,9 +201,22 @@ public class Main : BloonsTD6Mod
     /// Bloons are tracked by pointer and there is no hook for one being popped, so the
     /// table is emptied each round. Left to grow it would both slow the targeting check
     /// and risk crediting a new bloon that reused a dead one's address.
-    public override void OnRoundStart() => SentBloonOwner.Clear();
+    public override void OnRoundStart()
+    {
+        if (SentBloonOwner.Count > 0)
+        {
+            Diagnostics.Say($"round start: forgetting {SentBloonOwner.Count} tracked sent bloons" +
+                            (targetClears > 0 ? $", {targetClears} targets were redirected last round" : ""));
+        }
 
-    public override void PostBloonLeaked(Bloon bloon)
+        SentBloonOwner.Clear();
+        targetClears = 0;
+    }
+
+    public override void PostBloonLeaked(Bloon bloon) =>
+        Diagnostics.Guard("counting a leak", () => Leaked(bloon));
+
+    private static void Leaked(Bloon bloon)
     {
         if (!SentBloonOwner.Remove(bloon.Pointer, out var sender)) return;
 
@@ -188,13 +224,13 @@ public class Main : BloonsTD6Mod
         var damage = (int) Math.Max(1, bloon.bloonModel.leakDamage);
         Lives[victim] = LivesOf(victim) - damage;
 
-        ModHelper.Msg<Main>($"[vs] player {victim} leaked a sent {bloon.bloonModel?.id} from player {sender}, " +
+        Diagnostics.Say($"player {victim} leaked a sent {bloon.bloonModel?.id} from player {sender}, " +
                             $"-{damage}, now on {LivesOf(victim)}");
 
         if (LivesOf(victim) > 0 || loser != 0) return;
 
         loser = victim;
-        ModHelper.Msg<Main>($"[vs] player {victim} is out, player {sender} wins");
+        Diagnostics.Say($"player {victim} is out, player {sender} wins");
     }
 
     public override void OnTowerInventoryInitialized(TowerInventory towerInventory,
@@ -212,10 +248,10 @@ public class Main : BloonsTD6Mod
         }
 
         towerInventory.DisableTowers(banned.TryCast<Il2CppSystem.Collections.Generic.IEnumerable<string>>());
-        ModHelper.Msg<Main>($"[vs] {banned.Count} towers disabled: farms and every hero");
+        Diagnostics.Say($"{banned.Count} towers disabled: farms and every hero");
     }
 
-    public override void OnUpdate() => UpdateUi();
+    public override void OnUpdate() => Diagnostics.Guard("drawing the interface", UpdateUi);
 
     private static void Send(int index)
     {
@@ -223,6 +259,7 @@ public class Main : BloonsTD6Mod
         if (inGame == null || inGame.bridge == null || !inGame.IsInGame()) return;
 
         var me = inGame.bridge.GetInputId();
+        Diagnostics.Say($"player {me} pressed {SendType.All[index].Label}");
 
         // With another player there, the send has to travel as an action so both
         // simulations do it on the same tick. On your own there is nobody to stay in step
@@ -245,21 +282,34 @@ public class Main : BloonsTD6Mod
         var simulation = Sim;
         var wallet = simulation?.GetCashManager(sender)?.cash;
 
-        if (wallet is null || wallet.Value < cost)
+        if (wallet is null)
         {
-            ModHelper.Msg<Main>($"[vs] player {sender} cannot afford {send.Label} at {cost}");
+            Diagnostics.Warn($"player {sender} has no wallet, send of {send.Label} dropped");
+            return;
+        }
+
+        if (wallet.Value < cost)
+        {
+            Diagnostics.Say($"player {sender} cannot afford {send.Label}: has {(long) wallet.Value}, needs {cost}");
             return;
         }
 
         // Writing to the wallet directly moves the money but not the number on screen,
         // which only redraws when the simulation announces the change.
+        var before = wallet.Value;
         simulation.RemoveCash(cost, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal, sender,
             Il2CppAssets.Scripts.Simulation.Simulation.CashSource.Normal);
+
+        if (Math.Abs(before - cost - wallet.Value) > 1)
+        {
+            Diagnostics.Warn($"charging player {sender} {cost} moved their cash from {(long) before} " +
+                             $"to {(long) wallet.Value}, which is not what was asked for");
+        }
         Income[sender] = IncomeOf(sender) + send.Income;
         SpawnSpaced(sender, send, round);
 
         sendsSeen++;
-        ModHelper.Msg<Main>($"[vs] send {sendsSeen} on round {round + 1}: player {sender} paid " +
+        Diagnostics.Say($"send {sendsSeen} on round {round + 1}: player {sender} paid " +
                             $"{cost} for {send.Count} {send.Label}, income now {IncomeOf(sender)}");
     }
 
@@ -275,7 +325,7 @@ public class Main : BloonsTD6Mod
 
         if (spawner is null || bloonModel is null)
         {
-            ModHelper.Warning<Main>($"[vs] cannot emit {send.Label}: spawner " +
+            Diagnostics.Warn($"cannot emit {send.Label}: spawner " +
                                     $"{(spawner is null ? "missing" : "found")}, model " +
                                     $"{(bloonModel is null ? "missing" : "found")}");
             return;
@@ -284,7 +334,7 @@ public class Main : BloonsTD6Mod
         var lane = OppositeSides ? LaneFor(sender) : null;
         Releases.Add(new Release(sender, bloonModel, lane, send.Count, simTick + 1));
 
-        ModHelper.Msg<Main>($"[vs] queued {send.Count} {send.Label} for player {sender}, " +
+        Diagnostics.Say($"queued {send.Count} {send.Label} for player {sender}, " +
                             $"one every {(int) SpacingTicks} ticks, lane " +
                             $"{(lane is null ? "default" : "redirected")}");
     }
@@ -314,15 +364,23 @@ public class Main : BloonsTD6Mod
 
                     if (bloon is not null) SentBloonOwner[bloon.Pointer] = release.Sender;
 
+                    if (bloon is null) Diagnostics.Warn($"the spawner returned nothing for player {release.Sender}");
+
                     release.Remaining--;
                     release.NextTick = simTick + (int) SpacingTicks;
-                    if (release.Remaining <= 0) Releases.RemoveAt(i);
+
+                    if (release.Remaining <= 0)
+                    {
+                        Releases.RemoveAt(i);
+                        Diagnostics.Say($"send for player {release.Sender} fully released, " +
+                                        $"{SentBloonOwner.Count} sent bloons now tracked");
+                    }
                 }
             }
             catch (Exception e)
             {
                 Releases.Clear();
-                ModHelper.Error<Main>($"[vs] releasing a send failed: {e}");
+                Diagnostics.Failed("releasing a send failed: ", e);
             }
         }
     }
@@ -356,11 +414,12 @@ public class Main : BloonsTD6Mod
                 // Clearing can send the attack looking again, so do not re-enter.
                 clearing = true;
                 __instance.ClearTarget(true);
+                targetClears++;
             }
             catch (Exception e)
             {
                 targetingDisabled = true;
-                ModHelper.Error<Main>($"[vs] own-bloon targeting switched off after an error: {e}");
+                Diagnostics.Failed("own-bloon targeting switched off after an error: ", e);
             }
             finally
             {
@@ -387,6 +446,8 @@ public class Main : BloonsTD6Mod
             {
                 simulation.AddCash(entry.Value, Il2CppAssets.Scripts.Simulation.Simulation.CashType.Normal,
                     entry.Key, Il2CppAssets.Scripts.Simulation.Simulation.CashSource.EcoEarned, null, false);
+                Diagnostics.Say($"income: player {entry.Key} paid {entry.Value}, now on " +
+                                $"{(long) (simulation.GetCashManager(entry.Key)?.cash?.Value ?? 0)}");
                 continue;
             }
 
@@ -454,7 +515,7 @@ public class Main : BloonsTD6Mod
             }
             catch (Exception e)
             {
-                ModHelper.Error<Main>($"[vs] send failed, which will desync: {e}");
+                Diagnostics.Failed("send failed, which will desync: ", e);
             }
 
             return false;
@@ -516,7 +577,7 @@ public class Main : BloonsTD6Mod
         var health = FindAnywhere<HealthDisplay>();
         if (health is null)
         {
-            if (Time.frameCount % 300 == 0) ModHelper.Warning<Main>("[vs] waiting for the health display");
+            if (Time.frameCount % 300 == 0) Diagnostics.Warn($"waiting for the health display");
             return;
         }
 
@@ -538,7 +599,7 @@ public class Main : BloonsTD6Mod
         catch (Exception e)
         {
             built = true;
-            ModHelper.Error<Main>($"[vs] building the panel failed: {e}");
+            Diagnostics.Failed("building the panel failed: ", e);
         }
     }
 
@@ -621,7 +682,7 @@ public class Main : BloonsTD6Mod
             HideInstaMonkeys(menu);
             var withArt = 0;
 
-            if (grid is null) ModHelper.Warning<Main>("[vs] could not find the powers grid, sends will be off screen");
+            if (grid is null) Diagnostics.Warn($"could not find the powers grid, sends will be off screen");
 
             for (var i = 0; i < SendType.All.Length; i++)
             {
@@ -677,12 +738,12 @@ public class Main : BloonsTD6Mod
                 panel.AddText(new Info($"SendInfo{i}", 200, 32), $"x{send.Count}  +{send.Income}", 24);
             }
 
-            ModHelper.Msg<Main>($"[vs] powers tab filled with {ButtonCosts.Count} sends, " +
+            Diagnostics.Say($"powers tab filled with {ButtonCosts.Count} sends, " +
                                 $"{withArt} showing bloon art");
         }
         catch (Exception e)
         {
-            ModHelper.Error<Main>($"[vs] filling the powers tab failed: {e}");
+            Diagnostics.Failed("filling the powers tab failed: ", e);
         }
     }
 
