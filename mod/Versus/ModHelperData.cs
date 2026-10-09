@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.8.2";
+    public const string Version = "0.9.0";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
@@ -16,10 +16,14 @@ public static class ModHelperData
         "Playable on your own: with nobody else there a send just happens, lands on an " +
         "imaginary second player and drops their lives, so the whole thing can be tried in " +
         "single player.<br><br>" +
-        "Prices come from Bloons TD Battles: reds 25, blues 42, greens 60, yellows 75, pinks " +
-        "and whites 90, zebras 125, blacks and rainbows 150. Battles pays income every six " +
+        "Fifteen sends, from reds up to BADs. Prices come from Bloons TD Battles: reds 25, blues " +
+        "42, greens 60, yellows 75, pinks and whites 90, zebras 125, blacks and rainbows 150, " +
+        "MOABs 1500, BFBs 2500, ZOMGs 9000. Blimps carry a negative income, as they do in " +
+        "Battles. Battles pays income every six " +
         "seconds, so here it pays per round at ten times the eco figure, and the price " +
         "multiplier scales the lot against BTD6 cash.<br><br>" +
+        "Farms, heroes and insta monkeys are switched off, so income comes from sending and " +
+        "nothing else; one setting puts them back.<br><br>" +
         "A sent bloon that leaks costs the player it was aimed at, and a side on zero loses. " +
         "Still missing: separate tracks. A bloon that splits only counts for its own layer. " +
         "Every machine must run this build.";

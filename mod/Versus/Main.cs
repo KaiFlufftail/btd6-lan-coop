@@ -8,6 +8,7 @@ using BTD_Mod_Helper.Extensions;
 using HarmonyLib;
 using Il2Cpp;
 using Il2CppAssets.Scripts.Simulation.Bloons;
+using Il2CppAssets.Scripts.Simulation.Input;
 using Il2CppAssets.Scripts.Unity;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
@@ -50,6 +51,12 @@ public class Main : BloonsTD6Mod
         description = "Battles prices are small next to BTD6 cash. Raise this to make sends bite.",
         minValue = 0.1,
         maxValue = 50
+    };
+
+    private static readonly ModSettingBool BanFarmsAndHeroes = new(true)
+    {
+        displayName = "No farms, heroes or insta monkeys",
+        description = "Versus income comes from sending bloons, so the other routes are shut."
     };
 
     private static readonly ModSettingBool VersusMode = new(true)
@@ -163,6 +170,24 @@ public class Main : BloonsTD6Mod
 
         loser = victim;
         ModHelper.Msg<Main>($"[vs] player {victim} is out, player {sender} wins");
+    }
+
+    public override void OnTowerInventoryInitialized(TowerInventory towerInventory,
+        System.Collections.Generic.List<Il2CppAssets.Scripts.Models.TowerSets.TowerDetailsModel> allTowersInTheGame)
+    {
+        if (!VersusMode || !BanFarmsAndHeroes || towerInventory is null) return;
+
+        var banned = new Il2CppSystem.Collections.Generic.List<string>();
+        banned.Add("BananaFarm");
+
+        var model = InGame.instance?.bridge?.Model ?? Game.instance.model;
+        if (model is not null)
+        {
+            foreach (var hero in model.heroSet) banned.Add(hero.towerId);
+        }
+
+        towerInventory.DisableTowers(banned.TryCast<Il2CppSystem.Collections.Generic.IEnumerable<string>>());
+        ModHelper.Msg<Main>($"[vs] {banned.Count} towers disabled: farms and every hero");
     }
 
     public override void OnUpdate() => UpdateUi();
@@ -377,6 +402,21 @@ public class Main : BloonsTD6Mod
         return null;
     }
 
+    /// Insta monkeys are a second income-free supply of defence, and they live behind a
+    /// button in this same tab, so the button goes.
+    private static void HideInstaMonkeys(BasePowersMenu menu)
+    {
+        if (!BanFarmsAndHeroes) return;
+
+        foreach (var child in menu.GetComponentsInChildren<RectTransform>(true))
+        {
+            if (child is null) continue;
+            if (child.name != "ShowInstaMonkeysButton" && child.name != "InstaTowersMenu") continue;
+
+            child.gameObject.SetActive(false);
+        }
+    }
+
     private static void FillWithSends(BasePowersMenu menu)
     {
         if (!VersusMode || menu is null) return;
@@ -388,6 +428,7 @@ public class Main : BloonsTD6Mod
 
             var model = InGame.instance?.bridge?.Model ?? Game.instance.model;
             var grid = FindPowersGrid(menu);
+            HideInstaMonkeys(menu);
             var withArt = 0;
 
             if (grid is null) ModHelper.Warning<Main>("[vs] could not find the powers grid, sends will be off screen");
@@ -460,20 +501,32 @@ public class Main : BloonsTD6Mod
     private static void BuildLives(HealthDisplay health)
     {
         var column = hudObject.AddModHelperPanel(
-            new Info("VersusLives", 250, -LivesY, 420, 170, new Vector2(0, 1)), null,
-            RectTransform.Axis.Vertical, 8);
+            new Info("VersusLives", 250, -LivesY, 440, 200, new Vector2(0, 1)), null,
+            RectTransform.Axis.Vertical, 10);
 
-        p1Text = BuildCounter(column, "You");
-        p2Text = BuildCounter(column, "Them");
+        // The top bar's lives widget sits on a sprite drawn for exactly this size; borrowing
+        // it beats stretching a panel sprite until the pixels show.
+        var group = health.transform.parent is null ? null : health.transform.parent.GetComponent<Image>();
+        var backing = group is null ? null : group.sprite;
+
+        p1Text = BuildCounter(column, "You", backing);
+        p2Text = BuildCounter(column, "Them", backing);
     }
 
-    private static NK_TextMeshProUGUI BuildCounter(ModHelperPanel column, string name)
+    private static NK_TextMeshProUGUI BuildCounter(ModHelperPanel column, string name, Sprite backing)
     {
-        var row = column.AddPanel(new Info($"Versus{name}", 420, 76),
-            VanillaSprites.BlueInsertPanelRound, RectTransform.Axis.Horizontal, 8, 8);
+        var row = column.AddPanel(new Info($"Versus{name}", 440, 88),
+            VanillaSprites.BlueInsertPanelRound, RectTransform.Axis.Horizontal, 10, 10);
 
-        row.AddImage(new Info($"Versus{name}Icon", 56), VanillaSprites.LivesIcon);
-        return row.AddText(new Info($"Versus{name}Text", 320, 56), "", 34).Text;
+        if (backing is not null)
+        {
+            row.Background.sprite = backing;
+            row.Background.type = Image.Type.Sliced;
+            row.Background.pixelsPerUnitMultiplier = 0.5f;
+        }
+
+        row.AddImage(new Info($"Versus{name}Icon", 64), VanillaSprites.LivesIcon);
+        return row.AddText(new Info($"Versus{name}Text", 330, 64), "", 36).Text;
     }
 
     private static void Teardown()
