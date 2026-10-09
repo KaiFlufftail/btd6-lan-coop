@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.9.0";
+    public const string Version = "0.10.0";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
@@ -24,6 +24,8 @@ public static class ModHelperData
         "multiplier scales the lot against BTD6 cash.<br><br>" +
         "Farms, heroes and insta monkeys are switched off, so income comes from sending and " +
         "nothing else; one setting puts them back.<br><br>" +
+        "A batch arrives strung out rather than stacked, and on a map with more than one lane it " +
+        "enters from the other player's end. Both are settings.<br><br>" +
         "A sent bloon that leaks costs the player it was aimed at, and a side on zero loses. " +
         "Still missing: separate tracks. A bloon that splits only counts for its own layer. " +
         "Every machine must run this build.";

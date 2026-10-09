@@ -8,7 +8,12 @@ using BTD_Mod_Helper.Extensions;
 using HarmonyLib;
 using Il2Cpp;
 using Il2CppAssets.Scripts.Simulation.Bloons;
+using Il2CppAssets.Scripts.Models.Bloons;
+using Il2CppAssets.Scripts.Models.Rounds;
+using Il2CppAssets.Scripts.Models.TowerSets;
 using Il2CppAssets.Scripts.Simulation.Input;
+using Il2CppAssets.Scripts.Simulation.Track;
+using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppAssets.Scripts.Unity;
 using Il2CppAssets.Scripts.Unity.Bridge;
 using Il2CppAssets.Scripts.Unity.UI_New.InGame;
@@ -36,6 +41,11 @@ namespace BTD6Versus;
 public class Main : BloonsTD6Mod
 {
     private const string Marker = "VS|";
+
+    /// Emission indices this high are ours. The sender is folded into the number so the
+    /// spawner can tell whose bloon it is about to emit, and send it down their lane.
+    private const int VersusEmissionBase = 900000;
+    private const int PerPlayerBlock = 10000;
 
     private static readonly ModSettingInt StartingLives = new(100)
     {
@@ -71,6 +81,21 @@ public class Main : BloonsTD6Mod
         min = 0,
         max = 900,
         slider = false
+    };
+
+    private static readonly ModSettingInt SpacingMs = new(350)
+    {
+        displayName = "Gap between sent bloons in milliseconds",
+        description = "How strung out a batch arrives. Zero puts them on top of each other.",
+        min = 0,
+        max = 3000,
+        slider = false
+    };
+
+    private static readonly ModSettingBool OppositeSides = new(true)
+    {
+        displayName = "Sends arrive from the other player's end",
+        description = "Only means anything on a map with more than one lane."
     };
 
     private static readonly ModSettingInt LivesY = new(230)
@@ -227,12 +252,68 @@ public class Main : BloonsTD6Mod
 
         wallet.Value -= cost;
         Income[sender] = IncomeOf(sender) + send.Income;
-        InGame.instance.SpawnBloons(send.Bloon, send.Count, 0.3f);
+        SpawnSpaced(sender, send, round);
         Pending.Add(new PendingSend(sender, send.Bloon, send.Count));
 
         sendsSeen++;
         ModHelper.Msg<Main>($"[vs] send {sendsSeen} on round {round + 1}: player {sender} paid " +
                             $"{cost} for {send.Count} {send.Label}, income now {IncomeOf(sender)}");
+    }
+
+    /// A batch has to arrive strung out, not as one bloon carrying nine friends. Emission
+    /// times are measured from the start of the round, so the first one goes just after
+    /// wherever the round has got to and the rest follow at the chosen gap.
+    private static void SpawnSpaced(int sender, SendType send, int round)
+    {
+        var bridge = InGame.instance.bridge;
+        var elapsed = bridge.Simulation?.roundTime is null ? 0 : bridge.Simulation.roundTime.elapsed;
+        var baseTime = elapsed / 60f + 0.2f;
+        var gap = (int) SpacingMs / 1000f;
+
+        var emissions = new Il2CppReferenceArray<BloonEmissionModel>(send.Count);
+        for (var i = 0; i < send.Count; i++)
+        {
+            var emission = new BloonEmissionModel("VersusSend", baseTime + i * gap, send.Bloon, false, TowerSet.None);
+            emission.emissionIndex = VersusEmissionBase + sender * PerPlayerBlock + i;
+            emissions[i] = emission;
+        }
+
+        bridge.SpawnBloons(emissions, round, 0);
+    }
+
+    /// The spawner emits one bloon at a time and takes the next spawn point from
+    /// spawnOverrideThisFrame, so a sent bloon gets pointed at its target's lane in the
+    /// moment before it appears. Kept trivial and caught: this runs inside the simulation,
+    /// where a throwing patch breaks the game rather than itself.
+    [HarmonyPatch(typeof(Spawner), nameof(Spawner.Emit))]
+    private static class EmitPatch
+    {
+        private static void Prefix(Spawner __instance, int roundNumber, int emissionIndex)
+        {
+            if (!OppositeSides || emissionIndex < VersusEmissionBase) return;
+
+            try
+            {
+                var sender = (emissionIndex - VersusEmissionBase) / PerPlayerBlock;
+                var lane = LaneFor(__instance, roundNumber, Opponent(sender));
+                if (lane is not null) __instance.spawnOverrideThisFrame = lane;
+            }
+            catch
+            {
+                // A send that comes down the usual lane is far better than a broken round.
+            }
+        }
+    }
+
+    /// Player one defends the first lane the round uses and player two the last, so a send
+    /// aimed at someone enters at their end. One lane means both share it, as now.
+    private static PathSegment LaneFor(Spawner spawner, int round, int player)
+    {
+        var paths = spawner.GetSpawnPathsForRound(round);
+        if (paths is null || paths.Length == 0) return null;
+
+        var path = player <= 1 ? paths[0] : paths[paths.Length - 1];
+        return path is null || path.segments is null || path.segments.Length == 0 ? null : path.segments[0];
     }
 
     private static int CostOf(SendType send) => (int) Math.Round(send.Cost * (double) PriceScale);
