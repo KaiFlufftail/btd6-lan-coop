@@ -173,6 +173,7 @@ public class Main : BloonsTD6Mod
 
 
     private static GameObject hudObject;
+    private static ModHelperPanel banner;
     private static CanvasGroup hiddenLives;
 
     /// Sends are released one bloon at a time by the simulation's own clock. Doing it by
@@ -334,7 +335,7 @@ public class Main : BloonsTD6Mod
         if (LivesOf(victim) > 0 || loser != 0) return;
 
         loser = victim;
-        Diagnostics.Say($"player {victim} is out, player {sender} wins");
+        Diagnostics.Say($"player {victim} is out, player {sender} wins the match");
     }
 
     public override void OnTowerInventoryInitialized(TowerInventory towerInventory,
@@ -702,6 +703,8 @@ public class Main : BloonsTD6Mod
         if (p1Text is not null) p1Text.text = Readout(me, me);
         if (p2Text is not null) p2Text.text = Readout(them, me);
 
+        if (loser != 0 && banner is null) ShowResult(loser == me);
+
         var cash = Sim?.GetCashManager(me)?.cash?.Value ?? 0;
         for (var i = 0; i < ButtonCosts.Count; i++)
         {
@@ -709,6 +712,23 @@ public class Main : BloonsTD6Mod
             ButtonCosts[i].SetText(CashDisplay.LocalizeAndFormatCash(cost));
             ButtonCosts[i].Text.color = cash >= cost ? Color.white : new Color(1f, 0.45f, 0.45f);
         }
+    }
+
+    /// Said properly rather than left to a line of small text: the match is over and each
+    /// screen should say which way it went.
+    private static void ShowResult(bool lost)
+    {
+        banner = hudObject.AddModHelperPanel(
+            new Info("VersusResult", 0, 120, 900, 260, new Vector2(0.5f, 0.5f)),
+            VanillaSprites.MainBGPanelBlue, RectTransform.Axis.Vertical, 6, 20);
+
+        var headline = banner.AddText(new Info("VersusResultText", 860, 150), lost ? "DEFEAT" : "VICTORY", 110);
+        headline.Text.color = lost ? new Color(1f, 0.4f, 0.4f) : new Color(0.5f, 1f, 0.5f);
+
+        banner.AddText(new Info("VersusResultWho", 860, 60),
+            lost ? "you ran out of lives" : "they ran out of lives", 40);
+
+        Diagnostics.Say(lost ? "this player lost the match" : "this player won the match");
     }
 
     private static string Readout(int player, int me)
@@ -967,6 +987,7 @@ public class Main : BloonsTD6Mod
             hiddenLives.blocksRaycasts = true;
         }
         hudObject = null;
+        banner = null;
         hiddenLives = null;
         ButtonCosts.Clear();
         p1Text = null;
