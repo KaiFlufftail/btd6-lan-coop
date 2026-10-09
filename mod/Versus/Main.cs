@@ -13,7 +13,6 @@ using Il2CppAssets.Scripts.Models.Rounds;
 using Il2CppAssets.Scripts.Models.TowerSets;
 using Il2CppAssets.Scripts.Simulation.Input;
 using Il2CppAssets.Scripts.Simulation.Towers;
-using Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Behaviors;
 using Il2CppAssets.Scripts.Simulation.Track;
 using Il2CppInterop.Runtime.InteropTypes.Arrays;
 using Il2CppAssets.Scripts.Unity;
@@ -110,11 +109,11 @@ public class Main : BloonsTD6Mod
         description = "Only means anything on a map with more than one lane."
     };
 
-    private static readonly ModSettingBool OwnBloonsOnly = new(true)
+    private static readonly ModSettingBool OwnBloonsOnly = new(false)
     {
         displayName = "Towers ignore the bloons their own side sent",
-        description = "A tower only shoots what was sent at its owner. Switched off if it " +
-                      "ever misbehaves, since this runs inside the simulation."
+        description = "Experimental, and off until it has proved itself: this runs inside " +
+                      "the simulation, where a bad patch stalls the match rather than failing."
     };
 
     private static readonly ModSettingBool SwapLanes = new(false)
@@ -155,6 +154,7 @@ public class Main : BloonsTD6Mod
     private static readonly List<Release> Releases = new();
     private static int simTick;
     private static bool targetingDisabled;
+    private static bool clearing;
 
     private static NK_TextMeshProUGUI p1Text;
     private static NK_TextMeshProUGUI p2Text;
@@ -327,33 +327,44 @@ public class Main : BloonsTD6Mod
         }
     }
 
-    /// A tower should not shoot the bloons its own side paid to send. Every targeting mode
-    /// ends up here, so this is the one place that can decide it, and it runs constantly:
-    /// hence the early exits, and a kill switch rather than a crash if anything goes wrong.
-    [HarmonyPatch(typeof(TargetSupplier), nameof(TargetSupplier.GetTarget))]
+    /// A tower should not shoot the bloons its own side paid to send.
+    ///
+    /// The obvious place, the target supplier's GetTarget, hands back a struct by ref, and
+    /// Il2Cpp's trampoline fails on a patched method with a by-ref struct before the patch
+    /// body ever runs, which hangs the match rather than erroring. So this watches the
+    /// attack after it has chosen, and clears a choice that belongs to the tower's own
+    /// side. FindTarget takes no arguments and returns nothing, so there is nothing to
+    /// marshal.
+    [HarmonyPatch(typeof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack),
+        nameof(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack.FindTarget))]
     private static class TargetPatch
     {
-        private static void Postfix(TargetSupplier __instance, ref Target __result)
+        private static void Postfix(Il2CppAssets.Scripts.Simulation.Towers.Behaviors.Attack.Attack __instance)
         {
-            if (targetingDisabled || !OwnBloonsOnly || SentBloonOwner.Count == 0) return;
+            if (targetingDisabled || !OwnBloonsOnly || SentBloonOwner.Count == 0 || clearing) return;
 
             try
             {
-                var bloon = __result.bloon;
+                var bloon = __instance.target.bloon;
                 if (bloon is null) return;
 
                 if (!SentBloonOwner.TryGetValue(bloon.Pointer, out var sender)) return;
 
-                var tower = __instance.attack?.tower;
+                var tower = __instance.tower;
                 if (tower is null || tower.owner != sender) return;
 
-                // Sent by this tower's own side, so it is not theirs to pop.
-                __result = new Target();
+                // Clearing can send the attack looking again, so do not re-enter.
+                clearing = true;
+                __instance.ClearTarget(true);
             }
             catch (Exception e)
             {
                 targetingDisabled = true;
                 ModHelper.Error<Main>($"[vs] own-bloon targeting switched off after an error: {e}");
+            }
+            finally
+            {
+                clearing = false;
             }
         }
     }
