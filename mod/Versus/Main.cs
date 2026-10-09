@@ -303,6 +303,23 @@ public class Main : BloonsTD6Mod
     public override void PostBloonLeaked(Bloon bloon) =>
         Diagnostics.Guard("counting a leak", () => Leaked(bloon));
 
+    /// The shared pool still drains on a leak and the game declares everyone defeated, so
+    /// it is topped back up on the simulation's own tick. Each side's real lives are the
+    /// mod's, and they are the only ones that end anything.
+    private static void HoldSharedLives()
+    {
+        if (!VersusMode) return;
+
+        var simulation = Sim;
+        if (simulation is null) return;
+
+        if (simulation.Health >= simulation.MaxHealth) return;
+
+        simulation.SetHealthDirectlyWithoutNotify(simulation.MaxHealth);
+
+        if (simTick % 300 == 0) Diagnostics.Say("shared lives topped back up, versus lives are the real ones");
+    }
+
     private static void Leaked(Bloon bloon)
     {
         if (!SentBloonOwner.Remove(bloon.Pointer, out var sender)) return;
@@ -498,6 +515,7 @@ public class Main : BloonsTD6Mod
                 if (simTick % 600 == 0) Diagnostics.Say($"simulation tick {simTick}");
 
                 SweepTowerTeams();
+                HoldSharedLives();
 
                 PayIncome();
                 if (Releases.Count == 0) return;

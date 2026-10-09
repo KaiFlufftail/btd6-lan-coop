@@ -3,7 +3,7 @@ namespace BTD6Versus;
 public static class ModHelperData
 {
     public const string WorksOnVersion = "57.0";
-    public const string Version = "0.20.0";
+    public const string Version = "0.20.1";
     public const string Name = "BTD6 Versus";
 
     public const string Description =
@@ -33,6 +33,8 @@ public static class ModHelperData
         "Optionally each player's towers carry a team mark and a sent bloon is immune to its " +
         "sender's mark, so you cannot pop what you paid to send.<br><br>" +
         "A sent bloon that leaks costs the player it was aimed at, and a side on zero loses. " +
+        "The match's own shared lives are held full so a leak cannot end the game for both " +
+        "of you; the two counters at the top left are the ones that matter. " +
         "Still missing: separate tracks. A bloon that splits only counts for its own layer. " +
         "Every machine must run this build.<br><br>" +
         "Writes a full account of itself to VersusLog.txt in the game folder: which patches " +
