@@ -164,6 +164,7 @@ public class Main : BloonsTD6Mod
 
     private static readonly List<Release> Releases = new();
     private static int simTick;
+    private static int tickFailures;
 
 
     private static NK_TextMeshProUGUI p1Text;
@@ -374,14 +375,23 @@ public class Main : BloonsTD6Mod
     [HarmonyPatch(typeof(Spawner), nameof(Spawner.Process))]
     private static class ProcessPatch
     {
+        /// Runs every simulation tick. Nothing here may throw: an exception escaping into
+        /// the bridge kills the spawner's tick, the simulation stops advancing, and the
+        /// match sits on the loading screen forever with nothing logged. The whole body is
+        /// inside the guard for that reason, income included.
         private static void Postfix(Spawner __instance)
         {
-            simTick++;
-            PayIncome();
-            if (Releases.Count == 0) return;
-
             try
             {
+                simTick++;
+
+                // A heartbeat, so a stuck match can be told apart from a stuck simulation:
+                // if these keep coming, the tick is alive and the fault is elsewhere.
+                if (simTick % 600 == 0) Diagnostics.Say($"simulation tick {simTick}");
+
+                PayIncome();
+                if (Releases.Count == 0) return;
+
                 for (var i = Releases.Count - 1; i >= 0; i--)
                 {
                     var release = Releases[i];
@@ -430,6 +440,11 @@ public class Main : BloonsTD6Mod
     {
         var interval = (int) IncomeSeconds * 60;
         if (interval <= 0 || simTick % interval != 0 || Income.Count == 0) return;
+
+        // The spawner ticks before the match is fully up, so none of this can assume the
+        // game is ready.
+        var inGame = InGame.instance;
+        if (inGame is null || inGame.bridge is null || !inGame.IsInGame()) return;
 
         var simulation = Sim;
         if (simulation is null) return;
