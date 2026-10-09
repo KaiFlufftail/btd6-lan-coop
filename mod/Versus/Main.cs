@@ -149,7 +149,7 @@ public class Main : BloonsTD6Mod
     private const TowerSet TeamTwo = (TowerSet) 256;
 
     private static GameObject hudObject;
-    private static GameObject hiddenLives;
+    private static CanvasGroup hiddenLives;
 
     /// Sends are released one bloon at a time by the simulation's own clock. Doing it by
     /// frame would drift between machines; the spawner's tick does not.
@@ -191,6 +191,8 @@ public class Main : BloonsTD6Mod
         Diagnostics.CheckPatch(typeof(UnityToSimulation.SendEmoteAction),
             nameof(UnityToSimulation.SendEmoteAction.Run));
     }
+
+    public override void OnInGameLoaded(InGame inGame) => Diagnostics.Say("in game loaded");
 
     public override void OnMatchStart() => Diagnostics.Guard("starting a match", MatchStart);
 
@@ -542,7 +544,12 @@ public class Main : BloonsTD6Mod
             return;
         }
 
-        if (!built) Build();
+        if (!built)
+        {
+            Build();
+            if (built) Diagnostics.Say("interface built");
+        }
+
         if (!built) return;
 
         var me = inGame.bridge.GetInputId();
@@ -768,19 +775,26 @@ public class Main : BloonsTD6Mod
 
         // The top bar's lives widget sits on a sprite drawn for exactly this size; borrowing
         // it beats stretching a panel sprite until the pixels show.
-        var group = health.transform.parent is null ? null : health.transform.parent.GetComponent<Image>();
-        var backing = group is null ? null : group.sprite;
+        var backdrop = health.transform.parent is null ? null : health.transform.parent.GetComponent<Image>();
+        var backing = backdrop is null ? null : backdrop.sprite;
 
         p1Text = BuildCounter(column, "You", backing);
         p2Text = BuildCounter(column, "Them", backing);
 
-        // The round's own lives pool means nothing in versus, so it goes.
+        // The round's own lives pool means nothing in versus, so it is hidden. Hidden, not
+        // switched off: it runs a startup coroutine, and Unity stops coroutines on an
+        // inactive object, which left the match loading forever waiting on it.
         var vanilla = health.transform.parent;
-        if (vanilla is not null)
-        {
-            vanilla.gameObject.SetActive(false);
-            hiddenLives = vanilla.gameObject;
-        }
+        if (vanilla is null) return;
+
+        var fade = vanilla.gameObject.GetComponent<CanvasGroup>();
+        if (fade is null) fade = vanilla.gameObject.AddComponent<CanvasGroup>();
+
+        fade.alpha = 0;
+        fade.interactable = false;
+        fade.blocksRaycasts = false;
+        hiddenLives = fade;
+        Diagnostics.Say("vanilla lives counter faded out");
     }
 
     private static NK_TextMeshProUGUI BuildCounter(ModHelperPanel column, string name, Sprite backing)
@@ -802,7 +816,12 @@ public class Main : BloonsTD6Mod
     private static void Teardown()
     {
         if (hudObject is not null) UnityEngine.Object.Destroy(hudObject);
-        if (hiddenLives is not null) hiddenLives.SetActive(true);
+        if (hiddenLives is not null)
+        {
+            hiddenLives.alpha = 1;
+            hiddenLives.interactable = true;
+            hiddenLives.blocksRaycasts = true;
+        }
         hudObject = null;
         hiddenLives = null;
         ButtonCosts.Clear();
